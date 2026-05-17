@@ -17,7 +17,7 @@
     <div class="row">
       <label>
         <span>Username</span>
-        <input id="user" type="text" placeholder="e.g. waedi" autocomplete="off" required />
+        <input id="user" type="text" placeholder="e.g. waedi" autocomplete="off" />
       </label>
       <label>
         <span>Deck source</span>
@@ -52,6 +52,12 @@
     <label>
       <span>Deck filter <em>(optional, comma-separated substrings)</em></span>
       <input id="decks" type="text" placeholder="paper, counterint++" autocomplete="off" />
+    </label>
+
+    <label>
+      <span>Extra decks <em>(optional — paste Moxfield/Archidekt URLs or IDs, one per line or space-separated)</em></span>
+      <textarea id="extra_decks" rows="3" placeholder="https://moxfield.com/decks/NNcqOt7UlUWCeo6F0FidlQ&#10;https://archidekt.com/decks/12345678" autocomplete="off"></textarea>
+      <small class="hint">Use this if a public deck is missing from your username search (Moxfield's search index can lag behind for new/recently-updated decks). You can also use this without a username to score a single deck directly.</small>
     </label>
 
     <label>

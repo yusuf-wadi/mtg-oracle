@@ -18,6 +18,7 @@ try {
   if (saved.source) $("source").value = saved.source;
   if (saved.archidekt_user) $("archidekt_user").value = saved.archidekt_user;
   if (saved.decks) $("decks").value = saved.decks;
+  if (saved.extra_decks) $("extra_decks").value = saved.extra_decks;
   if (saved.paste) $("paste").value = saved.paste;
 } catch (_) {}
 
@@ -36,10 +37,11 @@ function persist() {
     source: $("source").value,
     archidekt_user: $("archidekt_user").value,
     decks: $("decks").value,
+    extra_decks: $("extra_decks").value,
     paste: $("paste").value,
   }));
 }
-["user", "scoring", "replacement_mode", "source", "archidekt_user", "decks", "paste"].forEach((id) => $(id).addEventListener("input", persist));
+["user", "scoring", "replacement_mode", "source", "archidekt_user", "decks", "extra_decks", "paste"].forEach((id) => $(id).addEventListener("input", persist));
 
 form.addEventListener("submit", async (e) => {
   e.preventDefault();
@@ -51,8 +53,14 @@ form.addEventListener("submit", async (e) => {
   const archidekt_user = $("archidekt_user").value.trim();
   const decksRaw = $("decks").value.trim();
   const decks = decksRaw ? decksRaw.split(",").map((s) => s.trim()).filter(Boolean) : [];
+  const extra_decks = $("extra_decks").value.trim();
 
-  if (!user || !paste) return;
+  if (!paste) return;
+  if (!user && !extra_decks) {
+    status.className = "err";
+    status.textContent = "Provide a username or at least one extra deck URL/ID.";
+    return;
+  }
 
   goBtn.disabled = true;
   status.className = "";
@@ -64,7 +72,7 @@ form.addEventListener("submit", async (e) => {
     const res = await fetch("/api/match", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ user, paste, scoring, decks, replacement_mode, source, archidekt_user }),
+      body: JSON.stringify({ user, paste, scoring, decks, replacement_mode, source, archidekt_user, extra_decks }),
     });
     const data = await res.json();
     if (!data.ok) {
@@ -73,9 +81,12 @@ form.addEventListener("submit", async (e) => {
       return;
     }
 
+    const extraBadge = (data.extra_decks_count && data.extra_decks_count > 0)
+      ? `<span>extra <b>${data.extra_decks_count}</b></span>` : "";
     meta.innerHTML =
       `<span><b>${data.purchases}</b> cards</span>` +
       `<span><b>${data.decks_analyzed}</b> decks</span>` +
+      extraBadge +
       `<span>source <b>${data.source || "moxfield"}</b></span>` +
       `<span>scoring <b>${data.scoring}</b></span>` +
       `<span>replacements <b>${data.replacement_mode || "auto"}</b></span>` +

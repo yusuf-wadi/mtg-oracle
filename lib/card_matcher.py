@@ -298,6 +298,54 @@ def fetch_deck_for(public_id: str, source: str) -> dict:
     raise ValueError(f"Unknown deck source: {source!r}")
 
 
+# Regex for parsing direct deck references (URLs or bare IDs).
+_MOXFIELD_URL_RE = re.compile(r"moxfield\.com/decks/([A-Za-z0-9_-]{18,})", re.I)
+_ARCHIDEKT_URL_RE = re.compile(r"archidekt\.com/(?:decks|deck)/(\d+)", re.I)
+_MOXFIELD_ID_RE = re.compile(r"^[A-Za-z0-9_-]{18,}$")
+_ARCHIDEKT_ID_RE = re.compile(r"^\d{4,}$")
+
+
+def parse_deck_references(text: str) -> list[tuple[str, str]]:
+    """Parse a free-form blob into a list of (source, public_id) tuples.
+    Accepts:
+      - Full Moxfield URLs (https://moxfield.com/decks/<id>)
+      - Full Archidekt URLs (https://archidekt.com/decks/<id>)
+      - Bare Moxfield IDs (18+ base64url-like chars)
+      - Bare Archidekt IDs (all-digits)
+    Items can be separated by commas, semicolons, whitespace, or newlines.
+    Duplicates are removed; order is preserved.
+    """
+    if not text:
+        return []
+    out: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    # First sweep: URL matches (they may be embedded in any string).
+    for m in _MOXFIELD_URL_RE.finditer(text):
+        key = ("moxfield", m.group(1))
+        if key not in seen:
+            seen.add(key); out.append(key)
+    for m in _ARCHIDEKT_URL_RE.finditer(text):
+        key = ("archidekt", m.group(1))
+        if key not in seen:
+            seen.add(key); out.append(key)
+    # Second sweep: bare tokens that aren't part of any URL we already matched.
+    residual = _MOXFIELD_URL_RE.sub(" ", text)
+    residual = _ARCHIDEKT_URL_RE.sub(" ", residual)
+    for raw in re.split(r"[\s,;]+", residual):
+        tok = raw.strip()
+        if not tok:
+            continue
+        if _ARCHIDEKT_ID_RE.match(tok):
+            key = ("archidekt", tok)
+        elif _MOXFIELD_ID_RE.match(tok):
+            key = ("moxfield", tok)
+        else:
+            continue
+        if key not in seen:
+            seen.add(key); out.append(key)
+    return out
+
+
 # ---------- Card-name normalization ----------
 
 def _normalize_token(name: str) -> str:
@@ -1645,7 +1693,8 @@ def main() -> int:
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    ap.add_argument("--user", required=True, help="Username on the chosen deck source(s)")
+    ap.add_argument("--user", default=None,
+                    help="Username on the chosen deck source(s). Optional if --extra-decks is used.")
     ap.add_argument("--source", choices=["moxfield", "archidekt", "both"], default="moxfield",
                     help="Deck source. 'both' queries Moxfield AND Archidekt for the same username "
                          "(useful only if your handle matches on both).")
@@ -1674,7 +1723,16 @@ def main() -> int:
                     help="Replacement suggestion mode. 'auto' detects theme alignment per upgrade; "
                          "'reinforce' always targets off-theme cuts to deepen the visible theme; "
                          "'redundant' always targets redundant role overlap (default behavior).")
+    ap.add_argument("--extra-decks", nargs="+", default=None,
+                    help="Direct Moxfield/Archidekt deck URLs or IDs to include in addition to (or instead of) the username search. "
+                         "Useful when a public deck is missing from Moxfield's search index. "
+                         "Examples: https://moxfield.com/decks/NNcqOt7UlUWCeo6F0FidlQ, https://archidekt.com/decks/12345678, NNcqOt7UlUWCeo6F0FidlQ")
     args = ap.parse_args()
+    extra_refs: list[tuple[str, str]] = []
+    if args.extra_decks:
+        extra_refs = parse_deck_references(" ".join(args.extra_decks))
+    if not args.user and not extra_refs:
+        ap.error("Either --user or --extra-decks must be provided")
 
     cfg = load_config(args.config)
     purchases = gather_purchases(args)
@@ -1683,20 +1741,30 @@ def main() -> int:
     sources = ["moxfield", "archidekt"] if args.source == "both" else [args.source]
     archidekt_user = args.archidekt_user or args.user
     user_decks: list[dict] = []
-    for s in sources:
-        u = archidekt_user if s == "archidekt" else args.user
-        print(f"Fetching {s} deck list for {u}...", file=sys.stderr)
-        try:
-            chunk = list_user_decks_for(u, s)
-        except RuntimeError as e:
-            print(f"  {s} fetch failed: {e}", file=sys.stderr)
+    if args.user:
+        for s in sources:
+            u = archidekt_user if s == "archidekt" else args.user
+            print(f"Fetching {s} deck list for {u}...", file=sys.stderr)
+            try:
+                chunk = list_user_decks_for(u, s)
+            except RuntimeError as e:
+                print(f"  {s} fetch failed: {e}", file=sys.stderr)
+                continue
+            # Archidekt mixes formats; restrict to Commander when source is archidekt
+            # (format ID 3). Moxfield search is already author-scoped.
+            if s == "archidekt":
+                chunk = [d for d in chunk if d.get("format") == _ARCHIDEKT_COMMANDER_FORMAT]
+            print(f"  {s}: found {len(chunk)} decks", file=sys.stderr)
+            user_decks.extend(chunk)
+    # Stub entries for direct refs; they get fetched below alongside user_decks.
+    have_keys = {f"{(d.get('_source') or 'moxfield')}:{d.get('publicId')}" for d in user_decks}
+    for src, pid in extra_refs:
+        key = f"{src}:{pid}"
+        if key in have_keys:
             continue
-        # Archidekt mixes formats; restrict to Commander when source is archidekt
-        # (format ID 3). Moxfield search is already author-scoped.
-        if s == "archidekt":
-            chunk = [d for d in chunk if d.get("format") == _ARCHIDEKT_COMMANDER_FORMAT]
-        print(f"  {s}: found {len(chunk)} decks", file=sys.stderr)
-        user_decks.extend(chunk)
+        have_keys.add(key)
+        user_decks.append({"publicId": pid, "name": f"[direct] {pid}", "_source": src})
+        print(f"  direct: added {src} deck {pid}", file=sys.stderr)
 
     # ---- Deck filtering ----
     patterns: list[str] = list(args.decks or [])
@@ -1750,7 +1818,8 @@ def main() -> int:
     if args.scoring in ("tfidf", "hybrid") and not _SKLEARN_AVAILABLE:
         print("scikit-learn not installed. Run: pip install scikit-learn", file=sys.stderr)
         return 2
-    build_report(args.user, purchases, full_decks, args.out, cfg, scoring_mode=args.scoring,
+    report_user = args.user or "(direct decks)"
+    build_report(report_user, purchases, full_decks, args.out, cfg, scoring_mode=args.scoring,
                  replacement_mode=args.replacement_mode)
     print(f"Wrote {args.out}", file=sys.stderr)
     return 0
