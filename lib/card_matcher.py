@@ -670,11 +670,13 @@ def _role_redundancy(deck_card: dict, deck_cards: dict, theme_keywords: list[str
 
 # --- Theme alignment / off-theme scoring -------------------------------------
 
-# Cosine threshold above which we consider the upgrade "on-theme" with the deck.
-_THEME_ALIGN_COSINE_THRESHOLD = 0.18
-# Strong-term overlap threshold (count of shared top-N terms).
+# Cosine threshold above which the upgrade is considered "on-theme" with the deck.
+# Deck profiles are noisy (removal/ramp staples dominate top terms), so we rely
+# primarily on cosine — top-term overlap is a confirmation bonus, not a gate.
+_THEME_ALIGN_COSINE_STRONG = 0.25  # cosine alone is enough at this level
+_THEME_ALIGN_COSINE_THRESHOLD = 0.18  # need shared-top-term to qualify here
 _THEME_ALIGN_TERM_OVERLAP_MIN = 1
-_DECK_TOP_TERMS_N = 6
+_DECK_TOP_TERMS_N = 8
 
 
 def _detect_alignment(
@@ -708,9 +710,16 @@ def _detect_alignment(
     up_strong_terms = {tfidf.idx_to_term[i] for i, _ in up_strong}
     shared = sorted(up_strong_terms & deck_top)
 
+    # Two ways to qualify as aligned:
+    #   1. Strong cosine alone (>= _THEME_ALIGN_COSINE_STRONG), OR
+    #   2. Moderate cosine (>= _THEME_ALIGN_COSINE_THRESHOLD) AND at least one
+    #      shared top-N term as confirmation.
     aligned = (
-        cos >= _THEME_ALIGN_COSINE_THRESHOLD
-        and len(shared) >= _THEME_ALIGN_TERM_OVERLAP_MIN
+        cos >= _THEME_ALIGN_COSINE_STRONG
+        or (
+            cos >= _THEME_ALIGN_COSINE_THRESHOLD
+            and len(shared) >= _THEME_ALIGN_TERM_OVERLAP_MIN
+        )
     )
     return aligned, cos, shared
 
@@ -813,16 +822,58 @@ def find_replacements(
         # Don't suggest cutting a card with the same name as the upgrade.
         if normalize_name(dc.get("name") or "") == up_name_norm:
             continue
-        # Need shared type for slot-equivalence; otherwise swap doesn't make sense.
+
+        dc_themes = themes_of(dc.get("oracle_text") or "", keywords)
+        shared_themes = up_themes & dc_themes
+        dc_cmc = float(dc.get("cmc") or 0.0)
+        redundancy = _role_redundancy(dc, deck["cards"], keywords)
+        reasons: list[str] = []
+
+        if effective_mode == "reinforce" and tfidf is not None:
+            # Theme-build cuts: rank by how off-theme the card is vs the
+            # WHOLE deck signature. We deliberately do NOT require shared
+            # type or role with the upgrade — the upgrade is on-theme, so
+            # any seat in the deck can host more theme by replacing the
+            # least-thematic card on the list.
+            off_theme, info = _off_theme_score(dc, deck, tfidf, deck_top_terms)
+            # Hard-skip: if this card IS on-theme, it isn't a reinforce cut.
+            if info["hits_top_term"] and info["cosine"] >= _THEME_ALIGN_COSINE_THRESHOLD:
+                continue
+            # Final score = off_theme, lightly penalized for role-redundancy
+            # (redundant cards ARE the theme — keep them).
+            score = off_theme
+            if redundancy >= 5:
+                score *= 0.7
+            elif redundancy >= 2:
+                score *= 0.9
+            if score <= 0.3:
+                continue
+            reasons.append(
+                f"off-theme: cosine {info['cosine']:.2f} vs deck"
+                + ("" if info["hits_top_term"] else "; no top-term overlap")
+            )
+            if redundancy >= 2:
+                shown = f"{redundancy}" if redundancy < 10 else "10+"
+                reasons.append(f"({shown} similar role(s) in deck — soft-protected)")
+            candidates.append({
+                "name": dc.get("name"),
+                "type_line": dc.get("type_line"),
+                "cmc": dc_cmc,
+                "score": round(score, 2),
+                "similarity": 0.0,
+                "cuttability": round(score, 2),
+                "redundancy": redundancy,
+                "shared_themes": sorted(shared_themes),
+                "reasons": reasons,
+            })
+            continue
+
+        # --- Redundant mode: require shared type/role for slot-equivalence ---
         if not (dc_types & up_types):
             continue
 
-        # --- Similarity (same in both modes) ---
         type_overlap = len(dc_types & up_types)
-        dc_themes = themes_of(dc.get("oracle_text") or "", keywords)
-        shared_themes = up_themes & dc_themes
         theme_overlap = len(shared_themes)
-        dc_cmc = float(dc.get("cmc") or 0.0)
         cmc_prox = _cmc_proximity(up_cmc, dc_cmc)
 
         sim_tfidf = 0.0
@@ -841,43 +892,22 @@ def find_replacements(
         if similarity <= 0:
             continue
 
-        # --- Cuttability (mode-dependent) ---
-        redundancy = _role_redundancy(dc, deck["cards"], keywords)
-        reasons: list[str] = []
-
-        if effective_mode == "reinforce" and tfidf is not None:
-            # Theme-build: protect on-theme cards, target off-theme ones.
-            off_theme, info = _off_theme_score(dc, deck, tfidf, deck_top_terms)
-            # Range ~[0.5, 2.0]
-            cuttability = 0.5 + 1.5 * min(1.0, off_theme)
-            # In reinforce mode, also bias against cutting role-redundant
-            # cards (those ARE the theme).
-            if redundancy >= 5:
-                cuttability *= 0.7
-            if shared_themes:
-                sample = list(shared_themes)[:3]
-                reasons.append("same role: " + ", ".join(sample))
-            reasons.append(
-                f"off-theme: cosine {info['cosine']:.2f}"
-                + ("" if info["hits_top_term"] else "; no top-term overlap")
-            )
-        else:
-            # Redundant-cut mode (current default behavior).
-            cuttability = 1.0 + min(1.5, 0.4 * redundancy)
-            if dc_cmc >= 5 and theme_overlap == 0:
-                cuttability *= 0.9
-            if dc_cmc >= 5 and theme_overlap >= 1 and redundancy >= 2:
-                cuttability *= 1.15
-            if shared_themes:
-                sample = list(shared_themes)[:3]
-                reasons.append("same role: " + ", ".join(sample))
-            if redundancy >= 1:
-                shown = f"{redundancy}" if redundancy < 10 else "10+"
-                reasons.append(f"{shown} similar payoff(s) already in deck")
+        # Redundant-cut mode: reward role-redundant cards.
+        cuttability = 1.0 + min(1.5, 0.4 * redundancy)
+        if dc_cmc >= 5 and theme_overlap == 0:
+            cuttability *= 0.9
+        if dc_cmc >= 5 and theme_overlap >= 1 and redundancy >= 2:
+            cuttability *= 1.15
+        if shared_themes:
+            sample = list(shared_themes)[:3]
+            reasons.append("same role: " + ", ".join(sample))
+        if redundancy >= 1:
+            shown = f"{redundancy}" if redundancy < 10 else "10+"
+            reasons.append(f"{shown} similar payoff(s) already in deck")
 
         if cmc_prox >= 0.75:
             reasons.append(f"close CMC ({dc_cmc:g} vs {up_cmc:g})")
-        if sim_tfidf > 0.05 and effective_mode != "reinforce":
+        if sim_tfidf > 0.05:
             reasons.append(f"text overlap {sim_tfidf:.2f}")
 
         final = similarity * cuttability
