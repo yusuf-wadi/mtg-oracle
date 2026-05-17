@@ -1186,20 +1186,13 @@ def build_report(
         if scored:
             lines.append("**Fits well in:**")
             for score, d, reasons in scored[:top_n]:
+                # Replacements are computed here so the Summary section can
+                # display them, but they're NOT rendered inline per-card.
                 replacements = find_replacements(info, d, cfg, tfidf, top_k=3)
-                bullet = (
+                lines.append(
                     f"- [{d['name']}]({d['url']}) \u2014 score {score}; "
                     + "; ".join(reasons)
                 )
-                if replacements:
-                    bullet += "\n  <details><summary>safe cuts to consider</summary>\n\n"
-                    for r in replacements:
-                        rline = f"  - **{r['name']}** _(CMC {r['cmc']:g})_ \u2014 score {r['score']}"
-                        if r["reasons"]:
-                            rline += "; " + "; ".join(r["reasons"])
-                        bullet += rline + "\n"
-                    bullet += "\n  </details>"
-                lines.append(bullet)
                 upgrade_summary[d["name"]].append((info["name"], score, replacements))
             lines.append("")
         elif not hits:
