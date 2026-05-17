@@ -14,6 +14,7 @@ try {
   const saved = JSON.parse(localStorage.getItem(LS_KEY) || "{}");
   if (saved.user) $("user").value = saved.user;
   if (saved.scoring) $("scoring").value = saved.scoring;
+  if (saved.replacement_mode) $("replacement_mode").value = saved.replacement_mode;
   if (saved.decks) $("decks").value = saved.decks;
   if (saved.paste) $("paste").value = saved.paste;
 } catch (_) {}
@@ -22,17 +23,19 @@ function persist() {
   localStorage.setItem(LS_KEY, JSON.stringify({
     user: $("user").value,
     scoring: $("scoring").value,
+    replacement_mode: $("replacement_mode").value,
     decks: $("decks").value,
     paste: $("paste").value,
   }));
 }
-["user", "scoring", "decks", "paste"].forEach((id) => $(id).addEventListener("input", persist));
+["user", "scoring", "replacement_mode", "decks", "paste"].forEach((id) => $(id).addEventListener("input", persist));
 
 form.addEventListener("submit", async (e) => {
   e.preventDefault();
   const user = $("user").value.trim();
   const paste = $("paste").value.trim();
   const scoring = $("scoring").value;
+  const replacement_mode = $("replacement_mode").value;
   const decksRaw = $("decks").value.trim();
   const decks = decksRaw ? decksRaw.split(",").map((s) => s.trim()).filter(Boolean) : [];
 
@@ -48,7 +51,7 @@ form.addEventListener("submit", async (e) => {
     const res = await fetch("/api/match", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ user, paste, scoring, decks }),
+      body: JSON.stringify({ user, paste, scoring, decks, replacement_mode }),
     });
     const data = await res.json();
     if (!data.ok) {
@@ -61,6 +64,7 @@ form.addEventListener("submit", async (e) => {
       `<span><b>${data.purchases}</b> cards</span>` +
       `<span><b>${data.decks_analyzed}</b> decks</span>` +
       `<span>scoring <b>${data.scoring}</b></span>` +
+      `<span>replacements <b>${data.replacement_mode || "auto"}</b></span>` +
       `<span><b>${data.elapsed_sec}s</b> total</span>`;
 
     if (typeof marked === "undefined") {

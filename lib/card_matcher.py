@@ -668,18 +668,111 @@ def _role_redundancy(deck_card: dict, deck_cards: dict, theme_keywords: list[str
     return count
 
 
+# --- Theme alignment / off-theme scoring -------------------------------------
+
+# Cosine threshold above which we consider the upgrade "on-theme" with the deck.
+_THEME_ALIGN_COSINE_THRESHOLD = 0.18
+# Strong-term overlap threshold (count of shared top-N terms).
+_THEME_ALIGN_TERM_OVERLAP_MIN = 1
+_DECK_TOP_TERMS_N = 6
+
+
+def _detect_alignment(
+    upgrade_card: dict,
+    deck: dict,
+    tfidf: "TfidfScorer",
+) -> tuple[bool, float, list[str]]:
+    """
+    Returns (is_aligned, cosine, shared_top_terms).
+
+    The upgrade is 'aligned' with the deck's theme when (a) its TF-IDF cosine
+    against the deck profile is above the alignment threshold AND (b) at
+    least one of its strong terms is in the deck's top-N TF-IDF terms.
+    """
+    up_text = _clean_oracle(upgrade_card.get("oracle_text") or "")
+    if not up_text:
+        return False, 0.0, []
+    up_vec = tfidf._vectorize(up_text)
+    if not up_vec:
+        return False, 0.0, []
+
+    deck_idx = tfidf.deck_idx.get(id(deck))
+    if deck_idx is None:
+        return False, 0.0, []
+    deck_vec = tfidf.deck_vectors[deck_idx]
+    cos = TfidfScorer._cosine(up_vec, deck_vec)
+
+    deck_top = {t for t, _ in tfidf.top_terms_for_deck(deck_idx, k=_DECK_TOP_TERMS_N)}
+    # Strong upgrade terms = top 5 weighted features in its own vector.
+    up_strong = sorted(up_vec.items(), key=lambda x: -x[1])[:5]
+    up_strong_terms = {tfidf.idx_to_term[i] for i, _ in up_strong}
+    shared = sorted(up_strong_terms & deck_top)
+
+    aligned = (
+        cos >= _THEME_ALIGN_COSINE_THRESHOLD
+        and len(shared) >= _THEME_ALIGN_TERM_OVERLAP_MIN
+    )
+    return aligned, cos, shared
+
+
+def _off_theme_score(
+    deck_card: dict,
+    deck: dict,
+    tfidf: "TfidfScorer",
+    deck_top_terms: set[str],
+) -> tuple[float, dict]:
+    """
+    Compute an "off-theme" score for a deck card in [0, 1.5] range.
+
+    Combines two signals:
+      1. (1 - card_cosine_to_deck) — outliers vs the deck profile
+      2. +0.5 if the card has NO overlap with the deck's top-N terms
+    """
+    dc_text = _clean_oracle(deck_card.get("oracle_text") or "")
+    if not dc_text:
+        # No text — likely vanilla creature. Treat as moderately off-theme.
+        return 0.6, {"cosine": 0.0, "hits_top_term": False}
+    dc_vec = tfidf._vectorize(dc_text)
+    if not dc_vec:
+        return 0.6, {"cosine": 0.0, "hits_top_term": False}
+
+    deck_idx = tfidf.deck_idx[id(deck)]
+    deck_vec = tfidf.deck_vectors[deck_idx]
+    cos = TfidfScorer._cosine(dc_vec, deck_vec)
+
+    dc_strong_terms = {
+        tfidf.idx_to_term[i] for i, _ in
+        sorted(dc_vec.items(), key=lambda x: -x[1])[:5]
+    }
+    hits_top = bool(dc_strong_terms & deck_top_terms)
+
+    off_theme = (1.0 - cos) + (0.0 if hits_top else 0.5)
+    return off_theme, {"cosine": cos, "hits_top_term": hits_top}
+
+
 def find_replacements(
     upgrade_card: dict,
     deck: dict,
     cfg: dict,
     tfidf: "TfidfScorer | None" = None,
     top_k: int = 3,
-) -> list[dict]:
+    mode: str = "auto",
+) -> dict:
     """
     Return up to `top_k` cards from `deck` that are the safest to cut in
     favor of `upgrade_card`, sorted best-first.
 
-    Each entry: {name, score, similarity, cuttability, reasons}.
+    `mode` controls the cuttability logic:
+      - 'redundant': reward role-redundant cards (default for off-theme upgrades)
+      - 'reinforce': reward off-theme cards (protect the deck's theme)
+      - 'auto':      pick 'reinforce' if the upgrade aligns with the deck's
+                      dominant TF-IDF theme, else 'redundant'
+
+    Returns a dict: {
+      mode: <effective mode actually used>,
+      alignment: {cosine, shared_terms, aligned},
+      candidates: [{name, score, ...}],
+    }
     """
     keywords = cfg["theme_keywords"]
     up_types = types_of(upgrade_card.get("type_line") or "")
@@ -690,6 +783,24 @@ def find_replacements(
 
     # Pre-compute TF-IDF vector for the upgrade card once, if available
     up_vec = tfidf._vectorize(up_text_clean) if (tfidf is not None and up_text_clean) else None
+
+    # Resolve auto-mode and gather alignment metadata for the report.
+    alignment = {"aligned": False, "cosine": 0.0, "shared_terms": []}
+    effective_mode = mode
+    if tfidf is not None:
+        aligned, cos, shared = _detect_alignment(upgrade_card, deck, tfidf)
+        alignment = {"aligned": aligned, "cosine": round(cos, 3), "shared_terms": shared}
+        if mode == "auto":
+            effective_mode = "reinforce" if aligned else "redundant"
+    elif mode == "auto":
+        # No TF-IDF available — can't auto-detect; default to redundant.
+        effective_mode = "redundant"
+
+    # Cache the deck's top terms for off-theme detection.
+    deck_top_terms: set[str] = set()
+    if tfidf is not None and effective_mode == "reinforce":
+        deck_idx = tfidf.deck_idx[id(deck)]
+        deck_top_terms = {t for t, _ in tfidf.top_terms_for_deck(deck_idx, k=_DECK_TOP_TERMS_N)}
 
     candidates: list[dict] = []
     for key, dc in deck["cards"].items():
@@ -706,7 +817,7 @@ def find_replacements(
         if not (dc_types & up_types):
             continue
 
-        # --- Similarity ---
+        # --- Similarity (same in both modes) ---
         type_overlap = len(dc_types & up_types)
         dc_themes = themes_of(dc.get("oracle_text") or "", keywords)
         shared_themes = up_themes & dc_themes
@@ -719,9 +830,8 @@ def find_replacements(
             dc_text = _clean_oracle(dc.get("oracle_text") or "")
             dc_vec = tfidf._vectorize(dc_text) if dc_text else None
             if dc_vec:
-                sim_tfidf = TfidfScorer._cosine(up_vec, dc_vec)  # 0..1
+                sim_tfidf = TfidfScorer._cosine(up_vec, dc_vec)
 
-        # Weighted similarity score (0..~10 range typically)
         similarity = (
             1.0 * type_overlap
             + 2.0 * theme_overlap
@@ -731,32 +841,46 @@ def find_replacements(
         if similarity <= 0:
             continue
 
-        # --- Cuttability ---
-        # More redundant roles in the deck = safer cut. Diminishing returns
-        # past a few duplicates.
+        # --- Cuttability (mode-dependent) ---
         redundancy = _role_redundancy(dc, deck["cards"], keywords)
-        # 1 redundant peer = +0.4, plateau at ~+1.5.
-        cuttability = 1.0 + min(1.5, 0.4 * redundancy)
-        # High-CMC marginal cards are slightly more cuttable.
-        if dc_cmc >= 5 and theme_overlap == 0:
-            cuttability *= 0.9  # actually a small penalty — if it shares no theme, it's risky
-        if dc_cmc >= 5 and theme_overlap >= 1 and redundancy >= 2:
-            cuttability *= 1.15  # expensive AND redundant: safer to drop
-
-        final = similarity * cuttability
-
-        # Reasons
         reasons: list[str] = []
-        if shared_themes:
-            sample = list(shared_themes)[:3]
-            reasons.append("same role: " + ", ".join(sample))
-        if redundancy >= 1:
-            shown = f"{redundancy}" if redundancy < 10 else "10+"
-            reasons.append(f"{shown} similar payoff(s) already in deck")
+
+        if effective_mode == "reinforce" and tfidf is not None:
+            # Theme-build: protect on-theme cards, target off-theme ones.
+            off_theme, info = _off_theme_score(dc, deck, tfidf, deck_top_terms)
+            # Range ~[0.5, 2.0]
+            cuttability = 0.5 + 1.5 * min(1.0, off_theme)
+            # In reinforce mode, also bias against cutting role-redundant
+            # cards (those ARE the theme).
+            if redundancy >= 5:
+                cuttability *= 0.7
+            if shared_themes:
+                sample = list(shared_themes)[:3]
+                reasons.append("same role: " + ", ".join(sample))
+            reasons.append(
+                f"off-theme: cosine {info['cosine']:.2f}"
+                + ("" if info["hits_top_term"] else "; no top-term overlap")
+            )
+        else:
+            # Redundant-cut mode (current default behavior).
+            cuttability = 1.0 + min(1.5, 0.4 * redundancy)
+            if dc_cmc >= 5 and theme_overlap == 0:
+                cuttability *= 0.9
+            if dc_cmc >= 5 and theme_overlap >= 1 and redundancy >= 2:
+                cuttability *= 1.15
+            if shared_themes:
+                sample = list(shared_themes)[:3]
+                reasons.append("same role: " + ", ".join(sample))
+            if redundancy >= 1:
+                shown = f"{redundancy}" if redundancy < 10 else "10+"
+                reasons.append(f"{shown} similar payoff(s) already in deck")
+
         if cmc_prox >= 0.75:
             reasons.append(f"close CMC ({dc_cmc:g} vs {up_cmc:g})")
-        if sim_tfidf > 0.05:
+        if sim_tfidf > 0.05 and effective_mode != "reinforce":
             reasons.append(f"text overlap {sim_tfidf:.2f}")
+
+        final = similarity * cuttability
 
         candidates.append({
             "name": dc.get("name"),
@@ -771,7 +895,11 @@ def find_replacements(
         })
 
     candidates.sort(key=lambda c: -c["score"])
-    return candidates[:top_k]
+    return {
+        "mode": effective_mode,
+        "alignment": alignment,
+        "candidates": candidates[:top_k],
+    }
 
 
 def score_upgrade_keyword(
@@ -1060,6 +1188,7 @@ def build_report(
     out_path: Path,
     cfg: dict,
     scoring_mode: str = "keyword",
+    replacement_mode: str = "auto",
 ) -> None:
     top_n = cfg["top_n"]
     fuzzy_threshold = cfg["fuzzy_match_threshold"]
@@ -1188,12 +1317,12 @@ def build_report(
             for score, d, reasons in scored[:top_n]:
                 # Replacements are computed here so the Summary section can
                 # display them, but they're NOT rendered inline per-card.
-                replacements = find_replacements(info, d, cfg, tfidf, top_k=3)
+                rep = find_replacements(info, d, cfg, tfidf, top_k=3, mode=replacement_mode)
                 lines.append(
                     f"- [{d['name']}]({d['url']}) \u2014 score {score}; "
                     + "; ".join(reasons)
                 )
-                upgrade_summary[d["name"]].append((info["name"], score, replacements))
+                upgrade_summary[d["name"]].append((info["name"], score, rep))
             lines.append("")
         elif not hits:
             legal_decks = [d["name"] for d in decks if color_legal(info["color_identity"], d["color_identity"])]
@@ -1216,12 +1345,25 @@ def build_report(
         if up:
             up_sorted = sorted(up, key=lambda x: -x[1])
             lines.append(f"**Upgrade candidates ({len(up_sorted)}):**")
-            for entry in up_sorted:
-                name, score, replacements = entry
+            for name, score, rep in up_sorted:
                 lines.append(f"- {name} (score {score})")
-                if replacements:
-                    lines.append("  <details><summary>safe cuts to consider</summary>\n")
-                    for r in replacements:
+                cands = rep["candidates"] if isinstance(rep, dict) else []
+                if cands:
+                    mode = rep["mode"]
+                    alignment = rep.get("alignment", {})
+                    if mode == "reinforce":
+                        summary_label = (
+                            "safe cuts — reinforce theme "
+                            f"(cosine {alignment.get('cosine', 0):.2f}"
+                            + (
+                                f"; shares “{', '.join(alignment.get('shared_terms', [])[:3])}”"
+                                if alignment.get("shared_terms") else ""
+                            ) + ")"
+                        )
+                    else:
+                        summary_label = "safe cuts — reduce redundancy"
+                    lines.append(f"  <details><summary>{summary_label}</summary>\n")
+                    for r in cands:
                         rline = f"  - **{r['name']}** _(CMC {r['cmc']:g})_ \u2014 score {r['score']}"
                         if r["reasons"]:
                             rline += "; " + "; ".join(r["reasons"])
@@ -1305,6 +1447,10 @@ def main() -> int:
     ap.add_argument("--deck-cache", default=Path("decks_cache.json"), type=Path,
                     help="Cache fetched deck JSON to avoid refetch")
     ap.add_argument("--refresh", action="store_true", help="Ignore cache and refetch all decks")
+    ap.add_argument("--replacement-mode", choices=["auto", "reinforce", "redundant"], default="auto",
+                    help="Replacement suggestion mode. 'auto' detects theme alignment per upgrade; "
+                         "'reinforce' always targets off-theme cuts to deepen the visible theme; "
+                         "'redundant' always targets redundant role overlap (default behavior).")
     args = ap.parse_args()
 
     cfg = load_config(args.config)
@@ -1363,7 +1509,8 @@ def main() -> int:
     if args.scoring in ("tfidf", "hybrid") and not _SKLEARN_AVAILABLE:
         print("scikit-learn not installed. Run: pip install scikit-learn", file=sys.stderr)
         return 2
-    build_report(args.user, purchases, full_decks, args.out, cfg, scoring_mode=args.scoring)
+    build_report(args.user, purchases, full_decks, args.out, cfg, scoring_mode=args.scoring,
+                 replacement_mode=args.replacement_mode)
     print(f"Wrote {args.out}", file=sys.stderr)
     return 0
 

@@ -42,6 +42,10 @@ def _run_match(payload: dict) -> dict:
     if scoring not in ("keyword", "tfidf", "hybrid"):
         return {"ok": False, "error": f"Invalid scoring mode: {scoring}"}
 
+    replacement_mode = payload.get("replacement_mode") or "auto"
+    if replacement_mode not in ("auto", "reinforce", "redundant"):
+        return {"ok": False, "error": f"Invalid replacement mode: {replacement_mode}"}
+
     if scoring in ("tfidf", "hybrid") and not cm._SKLEARN_AVAILABLE:
         return {"ok": False, "error": "scikit-learn unavailable for tfidf/hybrid mode."}
 
@@ -91,7 +95,8 @@ def _run_match(payload: dict) -> dict:
     with tempfile.NamedTemporaryFile("w+", suffix=".md", delete=False) as tf:
         out_path = Path(tf.name)
     try:
-        cm.build_report(user, purchases, full_decks, out_path, cfg, scoring_mode=scoring)
+        cm.build_report(user, purchases, full_decks, out_path, cfg,
+                        scoring_mode=scoring, replacement_mode=replacement_mode)
         markdown = out_path.read_text(encoding="utf-8")
     finally:
         try:
@@ -106,6 +111,7 @@ def _run_match(payload: dict) -> dict:
         "decks_analyzed": len(full_decks),
         "purchases": len(purchases),
         "scoring": scoring,
+        "replacement_mode": replacement_mode,
     }
 
 
