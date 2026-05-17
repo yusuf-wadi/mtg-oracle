@@ -63,7 +63,16 @@ form.addEventListener("submit", async (e) => {
       `<span>scoring <b>${data.scoring}</b></span>` +
       `<span><b>${data.elapsed_sec}s</b> total</span>`;
 
-    report.innerHTML = marked.parse(data.markdown, { gfm: true, breaks: false });
+    if (typeof marked === "undefined") {
+      // Hard fallback: render as preformatted text so the report is still readable.
+      report.innerHTML = "";
+      const pre = document.createElement("pre");
+      pre.style.whiteSpace = "pre-wrap";
+      pre.textContent = data.markdown;
+      report.appendChild(pre);
+    } else {
+      report.innerHTML = marked.parse(data.markdown, { gfm: true, breaks: false });
+    }
     // Open all moxfield links in a new tab
     report.querySelectorAll("a[href]").forEach((a) => {
       if (a.href.includes("moxfield.com")) {
