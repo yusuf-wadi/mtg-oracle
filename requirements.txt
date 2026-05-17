@@ -1,2 +1,1 @@
 requests>=2.31
-scikit-learn>=1.4

@@ -55,13 +55,30 @@ from typing import Any
 
 import requests
 
-# scikit-learn is only required when --scoring tfidf|hybrid is used.
-try:
-    from sklearn.feature_extraction.text import TfidfVectorizer
-    from sklearn.metrics.pairwise import cosine_similarity
-    _SKLEARN_AVAILABLE = True
-except ImportError:
-    _SKLEARN_AVAILABLE = False
+# Pure-Python TF-IDF — no scikit-learn required so the function fits inside
+# Vercel's 250 MB unzipped serverless size cap.
+_SKLEARN_AVAILABLE = True  # kept for backward-compat in match.py guard
+
+# English stop words (subset matching scikit-learn's ENGLISH_STOP_WORDS that
+# actually appear in Magic oracle text).
+_STOP_WORDS = frozenset({
+    "a", "about", "above", "after", "again", "against", "all", "am", "an", "and",
+    "any", "are", "as", "at", "be", "because", "been", "before", "being", "below",
+    "between", "both", "but", "by", "can", "could", "did", "do", "does", "doing",
+    "don", "down", "during", "each", "few", "for", "from", "further", "had",
+    "has", "have", "having", "he", "her", "here", "hers", "herself", "him",
+    "himself", "his", "how", "i", "if", "in", "into", "is", "it", "its", "itself",
+    "just", "me", "more", "most", "my", "myself", "no", "nor", "not", "now", "of",
+    "off", "on", "once", "only", "or", "other", "our", "ours", "ourselves", "out",
+    "over", "own", "s", "same", "she", "should", "so", "some", "such", "t", "than",
+    "that", "the", "their", "theirs", "them", "themselves", "then", "there",
+    "these", "they", "this", "those", "through", "to", "too", "under", "until",
+    "up", "very", "was", "we", "were", "what", "when", "where", "which", "while",
+    "who", "whom", "why", "will", "with", "you", "your", "yours", "yourself",
+    "yourselves",
+})
+
+_TOKEN_RE = re.compile(r"\b[a-z][a-z0-9]+\b")
 
 # ---------- Constants & defaults ----------
 
@@ -652,70 +669,138 @@ def _deck_corpus_text(deck_cards: dict) -> str:
     return " ".join(parts)
 
 
+def _tokenize(text: str) -> list[str]:
+    """Lowercase word tokens, drop stop-words and single-letter tokens."""
+    return [t for t in _TOKEN_RE.findall(text.lower()) if t not in _STOP_WORDS]
+
+
+def _make_ngrams(tokens: list[str], n_max: int) -> list[str]:
+    out: list[str] = list(tokens)
+    for n in range(2, n_max + 1):
+        out.extend(" ".join(tokens[i:i + n]) for i in range(len(tokens) - n + 1))
+    return out
+
+
 class TfidfScorer:
     """
-    Builds one TF-IDF document per deck (concatenated card oracle text) using a
-    shared vocabulary, then scores a candidate by cosine similarity between its
-    cleaned oracle text and the deck profile.
+    Pure-Python TF-IDF.
 
-    Vocabulary is fit on every card in every deck (not on the deck-level docs),
-    so IDF reflects card-level rarity — rare phrases like "landfall" or "myriad"
-    get high weight, common phrases like "target creature" get low weight.
+    Builds one document per deck (concatenated card oracle text) using a shared
+    vocabulary fit on card-level docs, so IDF reflects card-level rarity — rare
+    phrases like "landfall" or "myriad" get high weight, common phrases like
+    "target creature" get low weight. Scores a candidate by cosine similarity
+    between its cleaned oracle text and the deck profile.
+
+    Closely mirrors `sklearn.feature_extraction.text.TfidfVectorizer(
+        ngram_range=(1, ngram_max), min_df=N, max_df=F, stop_words='english',
+        sublinear_tf=True, norm='l2', smooth_idf=True)`.
     """
 
     def __init__(self, decks: list[dict], cfg: dict):
-        if not _SKLEARN_AVAILABLE:
-            raise RuntimeError(
-                "scikit-learn is required for tfidf scoring. Install: pip install scikit-learn"
-            )
         self.cfg = cfg
-        # Card-level corpus for IDF
-        card_docs: list[str] = []
+        ngram_max = int(cfg["tfidf_ngram_max"])
+        min_df = int(cfg["tfidf_min_df"])
+        max_df = float(cfg["tfidf_max_df"])
+
+        # --- Card-level corpus for vocabulary + IDF ---
+        card_token_docs: list[list[str]] = []
         for d in decks:
             for c in d["cards"].values():
                 if (c["name"] or "").lower() in _BASIC_LANDS:
                     continue
                 txt = _clean_oracle(c["oracle_text"])
-                if txt:
-                    card_docs.append(txt)
+                if not txt:
+                    continue
+                card_token_docs.append(_make_ngrams(_tokenize(txt), ngram_max))
 
-        if len(card_docs) < 10:
+        if len(card_token_docs) < 10:
             raise RuntimeError(
-                f"Too few cards ({len(card_docs)}) to build a meaningful TF-IDF corpus."
+                f"Too few cards ({len(card_token_docs)}) to build a meaningful TF-IDF corpus."
             )
 
-        self.vectorizer = TfidfVectorizer(
-            ngram_range=(1, int(cfg["tfidf_ngram_max"])),
-            min_df=int(cfg["tfidf_min_df"]),
-            max_df=float(cfg["tfidf_max_df"]),
-            stop_words="english",
-            sublinear_tf=True,
-        )
-        self.vectorizer.fit(card_docs)
+        n_cards = len(card_token_docs)
+        df: dict[str, int] = defaultdict(int)
+        for doc in card_token_docs:
+            for term in set(doc):
+                df[term] += 1
 
-        # Deck-level vectors (one doc per deck = concatenation of its cards)
-        deck_docs = [_deck_corpus_text(d["cards"]) for d in decks]
-        self.deck_matrix = self.vectorizer.transform(deck_docs)
+        max_df_count = int(max_df * n_cards) if max_df <= 1.0 else int(max_df)
+        vocab = {
+            term: idx for idx, term in enumerate(
+                sorted(t for t, c in df.items() if c >= min_df and c <= max_df_count)
+            )
+        }
+        if not vocab:
+            raise RuntimeError("TF-IDF vocabulary is empty after min_df/max_df filtering.")
+
+        # smooth_idf=True: idf = ln((1+n)/(1+df)) + 1
+        self.vocab = vocab
+        self.idx_to_term = {i: t for t, i in vocab.items()}
+        self.idf = {
+            term: math.log((1 + n_cards) / (1 + df[term])) + 1.0
+            for term in vocab
+        }
+        self.ngram_max = ngram_max
+
+        # --- Deck-level vectors ---
         self.decks = decks
         self.deck_idx = {id(d): i for i, d in enumerate(decks)}
+        self.deck_vectors: list[dict[int, float]] = []
+        for d in decks:
+            self.deck_vectors.append(self._vectorize(_deck_corpus_text(d["cards"])))
 
-        # Pre-compute, per deck, which types are heavily represented
+        # Pre-compute deck type histograms for the type bonus.
         self.deck_type_share: list[dict[str, float]] = []
         for d in decks:
             total = max(1, len(d["cards"]))
-            share = {}
+            share: dict[str, float] = {}
             for t in CARD_TYPES:
                 n = sum(1 for c in d["cards"].values() if t in types_of(c["type_line"]))
                 share[t] = n / total
             self.deck_type_share.append(share)
 
+    def _vectorize(self, text: str) -> dict[int, float]:
+        """Return a sparse {feature_idx: l2-normalized tfidf_weight} dict."""
+        if not text:
+            return {}
+        terms = _make_ngrams(_tokenize(text), self.ngram_max)
+        if not terms:
+            return {}
+        # raw term frequencies, in-vocab only
+        tf: dict[int, int] = defaultdict(int)
+        for t in terms:
+            idx = self.vocab.get(t)
+            if idx is not None:
+                tf[idx] += 1
+        if not tf:
+            return {}
+        # sublinear_tf: 1 + log(tf)
+        vec: dict[int, float] = {}
+        for idx, count in tf.items():
+            term = self.idx_to_term[idx]
+            vec[idx] = (1.0 + math.log(count)) * self.idf[term]
+        # l2 normalize
+        norm = math.sqrt(sum(v * v for v in vec.values()))
+        if norm > 0:
+            for k in vec:
+                vec[k] /= norm
+        return vec
+
+    @staticmethod
+    def _cosine(a: dict[int, float], b: dict[int, float]) -> float:
+        if not a or not b:
+            return 0.0
+        # vectors are already l2-normalized → cosine == dot product
+        if len(a) > len(b):
+            a, b = b, a
+        return sum(v * b.get(k, 0.0) for k, v in a.items())
+
     def top_terms_for_deck(self, deck_idx: int, k: int = 6) -> list[tuple[str, float]]:
-        vec = self.deck_matrix[deck_idx].toarray().ravel()
-        if not vec.any():
+        vec = self.deck_vectors[deck_idx]
+        if not vec:
             return []
-        feature_names = self.vectorizer.get_feature_names_out()
-        top = vec.argsort()[::-1][:k]
-        return [(feature_names[i], float(vec[i])) for i in top if vec[i] > 0]
+        items = sorted(vec.items(), key=lambda x: -x[1])[:k]
+        return [(self.idx_to_term[i], float(v)) for i, v in items if v > 0]
 
     def score(self, card: dict, deck: dict) -> tuple[float, list[str]]:
         if self.cfg["include_commanders_in_legality_check"] and not color_legal(
@@ -727,19 +812,21 @@ class TfidfScorer:
         if not card_text:
             return 0.0, []
 
-        card_vec = self.vectorizer.transform([card_text])
+        card_vec = self._vectorize(card_text)
         deck_idx = self.deck_idx[id(deck)]
-        cos = float(cosine_similarity(card_vec, self.deck_matrix[deck_idx])[0, 0])
+        deck_vec = self.deck_vectors[deck_idx]
+        cos = self._cosine(card_vec, deck_vec)
 
-        # Identify which terms drove the similarity (top shared weighted features)
-        card_arr = card_vec.toarray().ravel()
-        deck_arr = self.deck_matrix[deck_idx].toarray().ravel()
-        contrib = card_arr * deck_arr  # elementwise; sum == raw dot product
+        # Identify top shared weighted features for the reasons line.
         reasons: list[str] = []
-        if contrib.any():
-            feature_names = self.vectorizer.get_feature_names_out()
-            top = contrib.argsort()[::-1][:5]
-            top_terms = [feature_names[i] for i in top if contrib[i] > 0]
+        if card_vec and deck_vec:
+            contrib: list[tuple[int, float]] = []
+            for idx, v in card_vec.items():
+                dv = deck_vec.get(idx, 0.0)
+                if dv > 0:
+                    contrib.append((idx, v * dv))
+            contrib.sort(key=lambda x: -x[1])
+            top_terms = [self.idx_to_term[i] for i, c in contrib[:5] if c > 0]
             if top_terms:
                 reasons.append("shared terms: " + ", ".join(f"\u201c{t}\u201d" for t in top_terms))
 
@@ -750,10 +837,7 @@ class TfidfScorer:
         type_bonus *= self.cfg["tfidf_type_bonus"]
 
         score = cos * 100.0 + type_bonus
-        if reasons:
-            reasons.append(f"cosine {cos:.3f}; type-fit +{type_bonus:.1f}")
-        else:
-            reasons.append(f"cosine {cos:.3f}; type-fit +{type_bonus:.1f}")
+        reasons.append(f"cosine {cos:.3f}; type-fit +{type_bonus:.1f}")
         return round(score, 1), reasons
 
 
