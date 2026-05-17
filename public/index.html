@@ -10,14 +10,26 @@
 <main>
   <header>
     <h1>mtg-oracle</h1>
-    <p class="tag">Match a purchase list against your Moxfield decks. Commander-legal filtering, fuzzy matching, prerequisite-aware scoring.</p>
+    <p class="tag">Match a purchase list against your Moxfield or Archidekt decks. Commander-legal filtering, fuzzy matching, prerequisite-aware scoring.</p>
   </header>
 
   <form id="f">
     <div class="row">
       <label>
-        <span>Moxfield username</span>
+        <span>Username</span>
         <input id="user" type="text" placeholder="e.g. waedi" autocomplete="off" required />
+      </label>
+      <label>
+        <span>Deck source</span>
+        <select id="source">
+          <option value="moxfield">Moxfield</option>
+          <option value="archidekt">Archidekt</option>
+          <option value="both">Both</option>
+        </select>
+      </label>
+      <label id="archidekt-user-label" style="display:none">
+        <span>Archidekt username <em>(if different)</em></span>
+        <input id="archidekt_user" type="text" placeholder="e.g. Wildcard" autocomplete="off" />
       </label>
       <label>
         <span>Scoring mode</span>

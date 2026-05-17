@@ -88,6 +88,15 @@ MOXFIELD_USER_DECKS = (
 )
 MOXFIELD_DECK = "https://api2.moxfield.com/v3/decks/all/{public_id}"
 
+ARCHIDEKT_USER_DECKS = (
+    "https://archidekt.com/api/decks/v3/"
+    "?ownerUsername={user}&pageSize=100&page={page}"
+)
+ARCHIDEKT_DECK = "https://archidekt.com/api/decks/{deck_id}/"
+# Archidekt format IDs we care about (1=Standard, 3=Commander/EDH, etc.).
+# Reference: https://archidekt.com/forum/thread/40353/1
+_ARCHIDEKT_COMMANDER_FORMAT = 3
+
 SCRYFALL_NAMED_FUZZY = "https://api.scryfall.com/cards/named?fuzzy={name}"
 SCRYFALL_NAMED_EXACT = "https://api.scryfall.com/cards/named?exact={name}"
 
@@ -215,6 +224,80 @@ def fetch_deck(public_id: str) -> dict:
     return get_json(MOXFIELD_DECK.format(public_id=public_id))
 
 
+# ---------- Archidekt -------------------------------------------------------
+
+_ARCHIDEKT_COLOR_NAME_TO_LETTER = {
+    "White": "W", "Blue": "U", "Black": "B", "Red": "R", "Green": "G",
+}
+
+
+def list_archidekt_decks(user: str) -> list[dict]:
+    """List decks for an Archidekt username. Returns normalized stubs that
+    look like the Moxfield ones (publicId, name, publicUrl, colorIdentity)."""
+    decks: list[dict] = []
+    page = 1
+    while True:
+        data = get_json(ARCHIDEKT_USER_DECKS.format(user=user, page=page))
+        chunk = data.get("results") or []
+        if not chunk:
+            break
+        for r in chunk:
+            colors = r.get("colors") or []
+            color_ids = sorted({
+                _ARCHIDEKT_COLOR_NAME_TO_LETTER[c]
+                for c in colors
+                if c in _ARCHIDEKT_COLOR_NAME_TO_LETTER
+            })
+            decks.append({
+                # Reuse "publicId" key so the rest of the pipeline doesn't
+                # have to special-case the source.
+                "publicId": str(r.get("id")),
+                "name": r.get("name"),
+                "publicUrl": f"https://archidekt.com/decks/{r.get('id')}",
+                "colorIdentity": color_ids,
+                "format": r.get("deckFormat"),
+                "_source": "archidekt",
+            })
+        if not data.get("next"):
+            break
+        page += 1
+        if page > 50:  # safety stop
+            break
+    return decks
+
+
+def fetch_archidekt_deck(deck_id: str) -> dict:
+    return get_json(ARCHIDEKT_DECK.format(deck_id=deck_id))
+
+
+# ---------- Source dispatcher -----------------------------------------------
+
+_VALID_SOURCES = ("moxfield", "archidekt")
+
+
+def list_user_decks_for(user: str, source: str) -> list[dict]:
+    if source == "moxfield":
+        out = list_user_decks(user)
+        for d in out:
+            d.setdefault("_source", "moxfield")
+        return out
+    if source == "archidekt":
+        return list_archidekt_decks(user)
+    raise ValueError(f"Unknown deck source: {source!r}")
+
+
+def fetch_deck_for(public_id: str, source: str) -> dict:
+    if source == "moxfield":
+        d = fetch_deck(public_id)
+        d.setdefault("_source", "moxfield")
+        return d
+    if source == "archidekt":
+        d = fetch_archidekt_deck(public_id)
+        d.setdefault("_source", "archidekt")
+        return d
+    raise ValueError(f"Unknown deck source: {source!r}")
+
+
 # ---------- Card-name normalization ----------
 
 def _normalize_token(name: str) -> str:
@@ -323,6 +406,95 @@ def extract_deck_cards(deck: dict) -> tuple[dict[str, dict], dict[str, str]]:
             for face in face_names(name):
                 face_index.setdefault(face, key)
     return out, face_index
+
+
+# Archidekt categories that mark a card as not-mainboard or non-deck.
+_ARCHIDEKT_SKIP_CATEGORIES = {
+    "sideboard", "maybeboard", "considering", "acquire",
+    "do not include", "reserve",
+}
+
+
+def _archidekt_compose_type_line(oc: dict) -> str:
+    """Compose a Scryfall-style 'Super Type — Subtype' string from
+    Archidekt's oracleCard.{superTypes, types, subTypes} arrays."""
+    faces = oc.get("faces") or []
+    if faces and isinstance(faces[0], dict):
+        # MDFC / split / adventure — join faces with ' // ' to match Scryfall.
+        return " // ".join(
+            _archidekt_compose_type_line(f) for f in faces
+        )
+    supers = [s for s in (oc.get("superTypes") or []) if s]
+    types = [t for t in (oc.get("types") or []) if t]
+    subs = [s for s in (oc.get("subTypes") or []) if s]
+    left = " ".join(supers + types).strip()
+    if subs:
+        return f"{left} — {' '.join(subs)}".strip()
+    return left
+
+
+def _archidekt_compose_oracle(oc: dict) -> str:
+    faces = oc.get("faces") or []
+    if faces and isinstance(faces[0], dict):
+        return " ".join((f.get("text") or "") for f in faces).lower()
+    return (oc.get("text") or "").lower()
+
+
+def _archidekt_color_identity(oc: dict) -> set[str]:
+    """Archidekt uses full color names; map to Scryfall letters."""
+    return {
+        _ARCHIDEKT_COLOR_NAME_TO_LETTER[c]
+        for c in (oc.get("colorIdentity") or [])
+        if c in _ARCHIDEKT_COLOR_NAME_TO_LETTER
+    }
+
+
+def extract_archidekt_deck_cards(deck: dict) -> tuple[dict[str, dict], dict[str, str]]:
+    """Archidekt analog of extract_deck_cards. Archidekt uses a flat
+    `cards` array; each entry has categories that label its board
+    (mainboard, Sideboard, Maybeboard, Commander, etc.)."""
+    out: dict[str, dict] = {}
+    face_index: dict[str, str] = {}
+    for entry in deck.get("cards") or []:
+        cats = entry.get("categories") or []
+        cats_lower = [str(c).strip().lower() for c in cats]
+        if any(c in _ARCHIDEKT_SKIP_CATEGORIES for c in cats_lower):
+            continue
+        card = entry.get("card") or {}
+        oc = card.get("oracleCard") or {}
+        name = oc.get("name") or card.get("displayName")
+        if not name:
+            continue
+        # Detect commander / companion / signatureSpells via category names.
+        if "commander" in cats_lower:
+            board = "commanders"
+        elif "companion" in cats_lower:
+            board = "companions"
+        elif "signature spell" in cats_lower or "signaturespells" in cats_lower:
+            board = "signatureSpells"
+        else:
+            board = "mainboard"
+        key = normalize_name(name)
+        out[key] = {
+            "name": name,
+            "type_line": _archidekt_compose_type_line(oc),
+            "color_identity": _archidekt_color_identity(oc),
+            "oracle_text": _archidekt_compose_oracle(oc),
+            "cmc": oc.get("cmc"),
+            "quantity": entry.get("quantity", 1),
+            "board": board,
+        }
+        for face in face_names(name):
+            face_index.setdefault(face, key)
+    return out, face_index
+
+
+def _archidekt_deck_color_identity(deck: dict) -> set[str]:
+    ci: set[str] = set()
+    for entry in deck.get("cards") or []:
+        oc = (entry.get("card") or {}).get("oracleCard") or {}
+        ci |= _archidekt_color_identity(oc)
+    return ci
 
 
 # ---------- Scryfall ----------
@@ -1209,18 +1381,39 @@ def build_report(
 
     decks = []
     for d in deck_data:
-        cards, face_index = extract_deck_cards(d)
-        decks.append({
-            "name": d.get("name"),
-            "public_id": d.get("publicId"),
-            "url": d.get("publicUrl") or f"https://moxfield.com/decks/{d.get('publicId')}",
-            "color_identity": set(d.get("colorIdentity") or []),
-            "cards": cards,
-            "face_index": face_index,
-            "commander": ", ".join(
+        source = d.get("_source") or "moxfield"
+        if source == "archidekt":
+            cards, face_index = extract_archidekt_deck_cards(d)
+            # Archidekt deck object doesn't always carry colorIdentity at the
+            # top level when fetched by id; derive it from the cards.
+            deck_ci = _archidekt_deck_color_identity(d)
+            commander_names = [
+                ((entry.get("card") or {}).get("oracleCard") or {}).get("name", "")
+                for entry in (d.get("cards") or [])
+                if any(str(c).strip().lower() == "commander"
+                       for c in (entry.get("categories") or []))
+            ]
+            commander_str = ", ".join(n for n in commander_names if n) or "—"
+            url = f"https://archidekt.com/decks/{d.get('id')}"
+            public_id = str(d.get("id") or "")
+        else:
+            cards, face_index = extract_deck_cards(d)
+            deck_ci = set(d.get("colorIdentity") or [])
+            commander_str = ", ".join(
                 (c.get("card") or {}).get("name", "")
                 for c in (d.get("boards", {}).get("commanders", {}).get("cards") or {}).values()
-            ) or "—",
+            ) or "—"
+            url = d.get("publicUrl") or f"https://moxfield.com/decks/{d.get('publicId')}"
+            public_id = d.get("publicId") or ""
+        decks.append({
+            "name": d.get("name"),
+            "public_id": public_id,
+            "url": url,
+            "color_identity": deck_ci,
+            "cards": cards,
+            "face_index": face_index,
+            "commander": commander_str,
+            "source": source,
         })
 
     # Build TF-IDF scorer if needed
@@ -1229,7 +1422,17 @@ def build_report(
         tfidf = TfidfScorer(decks, cfg)
 
     lines: list[str] = []
-    lines.append(f"# Card Matching Report — Moxfield user `{user}`")
+    # Header source label: derive from the actual decks; if mixed, say "deck sources".
+    sources_used = sorted({d.get("source", "moxfield") for d in decks})
+    if not sources_used:
+        src_label = "Moxfield user"
+    elif len(sources_used) == 1:
+        src_label = {"moxfield": "Moxfield user", "archidekt": "Archidekt user"}.get(
+            sources_used[0], f"{sources_used[0]} user"
+        )
+    else:
+        src_label = "user (" + " + ".join(sources_used) + ")"
+    lines.append(f"# Card Matching Report — {src_label} `{user}`")
     lines.append(f"_Generated {time.strftime('%Y-%m-%d %H:%M %Z')}_  ")
     lines.append(f"_{len(purchases)} purchases · {len(decks)} decks · scoring: **{scoring_mode}** · fuzzy threshold {fuzzy_threshold} · Commander legality enforced: {cfg['enforce_commander_legality']}_\n")
 
@@ -1442,7 +1645,13 @@ def main() -> int:
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    ap.add_argument("--user", required=True, help="Moxfield username (e.g. waedi)")
+    ap.add_argument("--user", required=True, help="Username on the chosen deck source(s)")
+    ap.add_argument("--source", choices=["moxfield", "archidekt", "both"], default="moxfield",
+                    help="Deck source. 'both' queries Moxfield AND Archidekt for the same username "
+                         "(useful only if your handle matches on both).")
+    ap.add_argument("--archidekt-user", default=None,
+                    help="Override the Archidekt username when --source is archidekt or both. "
+                         "Defaults to --user if not set.")
     src = ap.add_mutually_exclusive_group()
     src.add_argument("--purchases", type=Path, help="CSV or text file of purchased cards")
     src.add_argument("--paste", action="store_true",
@@ -1471,9 +1680,23 @@ def main() -> int:
     purchases = gather_purchases(args)
     print(f"Loaded {len(purchases)} purchase entries", file=sys.stderr)
 
-    print(f"Fetching deck list for {args.user}...", file=sys.stderr)
-    user_decks = list_user_decks(args.user)
-    print(f"  found {len(user_decks)} decks", file=sys.stderr)
+    sources = ["moxfield", "archidekt"] if args.source == "both" else [args.source]
+    archidekt_user = args.archidekt_user or args.user
+    user_decks: list[dict] = []
+    for s in sources:
+        u = archidekt_user if s == "archidekt" else args.user
+        print(f"Fetching {s} deck list for {u}...", file=sys.stderr)
+        try:
+            chunk = list_user_decks_for(u, s)
+        except RuntimeError as e:
+            print(f"  {s} fetch failed: {e}", file=sys.stderr)
+            continue
+        # Archidekt mixes formats; restrict to Commander when source is archidekt
+        # (format ID 3). Moxfield search is already author-scoped.
+        if s == "archidekt":
+            chunk = [d for d in chunk if d.get("format") == _ARCHIDEKT_COMMANDER_FORMAT]
+        print(f"  {s}: found {len(chunk)} decks", file=sys.stderr)
+        user_decks.extend(chunk)
 
     # ---- Deck filtering ----
     patterns: list[str] = list(args.decks or [])
@@ -1505,15 +1728,19 @@ def main() -> int:
     full_decks = []
     for d in user_decks:
         pid = d.get("publicId")
+        src = d.get("_source") or "moxfield"
         if not pid:
             continue
-        if pid in cache and not args.refresh:
-            full_decks.append(cache[pid])
+        cache_key = f"{src}:{pid}"
+        if cache_key in cache and not args.refresh:
+            cached = cache[cache_key]
+            cached.setdefault("_source", src)
+            full_decks.append(cached)
         else:
-            print(f"  fetching {d.get('name')}...", file=sys.stderr)
+            print(f"  fetching [{src}] {d.get('name')}...", file=sys.stderr)
             try:
-                deck = fetch_deck(pid)
-                cache[pid] = deck
+                deck = fetch_deck_for(pid, src)
+                cache[cache_key] = deck
                 full_decks.append(deck)
                 time.sleep(0.4)
             except RuntimeError as e:

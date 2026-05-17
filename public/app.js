@@ -15,20 +15,31 @@ try {
   if (saved.user) $("user").value = saved.user;
   if (saved.scoring) $("scoring").value = saved.scoring;
   if (saved.replacement_mode) $("replacement_mode").value = saved.replacement_mode;
+  if (saved.source) $("source").value = saved.source;
+  if (saved.archidekt_user) $("archidekt_user").value = saved.archidekt_user;
   if (saved.decks) $("decks").value = saved.decks;
   if (saved.paste) $("paste").value = saved.paste;
 } catch (_) {}
+
+function updateArchidektFieldVisibility() {
+  const src = $("source").value;
+  $("archidekt-user-label").style.display = (src === "both") ? "flex" : "none";
+}
+updateArchidektFieldVisibility();
+$("source").addEventListener("change", updateArchidektFieldVisibility);
 
 function persist() {
   localStorage.setItem(LS_KEY, JSON.stringify({
     user: $("user").value,
     scoring: $("scoring").value,
     replacement_mode: $("replacement_mode").value,
+    source: $("source").value,
+    archidekt_user: $("archidekt_user").value,
     decks: $("decks").value,
     paste: $("paste").value,
   }));
 }
-["user", "scoring", "replacement_mode", "decks", "paste"].forEach((id) => $(id).addEventListener("input", persist));
+["user", "scoring", "replacement_mode", "source", "archidekt_user", "decks", "paste"].forEach((id) => $(id).addEventListener("input", persist));
 
 form.addEventListener("submit", async (e) => {
   e.preventDefault();
@@ -36,6 +47,8 @@ form.addEventListener("submit", async (e) => {
   const paste = $("paste").value.trim();
   const scoring = $("scoring").value;
   const replacement_mode = $("replacement_mode").value;
+  const source = $("source").value;
+  const archidekt_user = $("archidekt_user").value.trim();
   const decksRaw = $("decks").value.trim();
   const decks = decksRaw ? decksRaw.split(",").map((s) => s.trim()).filter(Boolean) : [];
 
@@ -51,7 +64,7 @@ form.addEventListener("submit", async (e) => {
     const res = await fetch("/api/match", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ user, paste, scoring, decks, replacement_mode }),
+      body: JSON.stringify({ user, paste, scoring, decks, replacement_mode, source, archidekt_user }),
     });
     const data = await res.json();
     if (!data.ok) {
@@ -63,6 +76,7 @@ form.addEventListener("submit", async (e) => {
     meta.innerHTML =
       `<span><b>${data.purchases}</b> cards</span>` +
       `<span><b>${data.decks_analyzed}</b> decks</span>` +
+      `<span>source <b>${data.source || "moxfield"}</b></span>` +
       `<span>scoring <b>${data.scoring}</b></span>` +
       `<span>replacements <b>${data.replacement_mode || "auto"}</b></span>` +
       `<span><b>${data.elapsed_sec}s</b> total</span>`;
@@ -77,9 +91,9 @@ form.addEventListener("submit", async (e) => {
     } else {
       report.innerHTML = marked.parse(data.markdown, { gfm: true, breaks: false });
     }
-    // Open all moxfield links in a new tab
+    // Open deck links in a new tab
     report.querySelectorAll("a[href]").forEach((a) => {
-      if (a.href.includes("moxfield.com")) {
+      if (a.href.includes("moxfield.com") || a.href.includes("archidekt.com")) {
         a.target = "_blank";
         a.rel = "noopener noreferrer";
       }

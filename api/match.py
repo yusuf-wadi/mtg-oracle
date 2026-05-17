@@ -6,7 +6,10 @@ POST JSON body:
   "user": "waedi",
   "paste": "1x Sram, Senior Edificer\n1x Hellkite Charger\n...",
   "scoring": "keyword" | "tfidf" | "hybrid",
-  "decks": ["paper", "counterint++"]   # optional
+  "replacement_mode": "auto" | "reinforce" | "redundant",   # optional
+  "source": "moxfield" | "archidekt" | "both",              # optional (default moxfield)
+  "archidekt_user": "OtherName",                            # optional override
+  "decks": ["paper", "counterint++"]                        # optional
 }
 
 Response JSON:
@@ -32,7 +35,12 @@ from lib import card_matcher as cm  # noqa: E402
 def _run_match(payload: dict) -> dict:
     user = (payload.get("user") or "").strip()
     if not user:
-        return {"ok": False, "error": "Missing 'user' (Moxfield username)."}
+        return {"ok": False, "error": "Missing 'user' (deck-source username)."}
+
+    source = (payload.get("source") or "moxfield").strip().lower()
+    if source not in ("moxfield", "archidekt", "both"):
+        return {"ok": False, "error": f"Invalid source: {source!r}"}
+    archidekt_user = (payload.get("archidekt_user") or "").strip() or user
 
     paste_text = payload.get("paste") or ""
     if not paste_text.strip():
@@ -63,9 +71,25 @@ def _run_match(payload: dict) -> dict:
         return {"ok": False, "error": "No cards parsed from paste body."}
 
     t0 = time.time()
-    user_decks = cm.list_user_decks(user)
+    sources = ["moxfield", "archidekt"] if source == "both" else [source]
+    user_decks: list[dict] = []
+    source_errors: list[str] = []
+    for s in sources:
+        u = archidekt_user if s == "archidekt" else user
+        try:
+            chunk = cm.list_user_decks_for(u, s)
+        except RuntimeError as e:
+            source_errors.append(f"{s} list failed: {e}")
+            continue
+        # Restrict Archidekt to Commander-format decks — our scoring assumes EDH.
+        if s == "archidekt":
+            chunk = [d for d in chunk if d.get("format") == cm._ARCHIDEKT_COMMANDER_FORMAT]
+        user_decks.extend(chunk)
+
     if not user_decks:
-        return {"ok": False, "error": f"Moxfield user '{user}' has no public decks (or doesn't exist)."}
+        detail = ("; ".join(source_errors)) if source_errors else ""
+        srcs = " + ".join(sources)
+        return {"ok": False, "error": f"{srcs} user '{user}' has no public decks (or doesn't exist)." + (f" [{detail}]" if detail else "")}
 
     if deck_patterns:
         user_decks = cm.filter_decks(user_decks, deck_patterns)
@@ -80,16 +104,17 @@ def _run_match(payload: dict) -> dict:
     full_decks = []
     for d in user_decks:
         pid = d.get("publicId")
+        src = d.get("_source") or "moxfield"
         if not pid:
             continue
         try:
-            full_decks.append(cm.fetch_deck(pid))
+            full_decks.append(cm.fetch_deck_for(pid, src))
             time.sleep(0.15)
         except RuntimeError:
             continue
 
     if not full_decks:
-        return {"ok": False, "error": "Could not fetch any deck details from Moxfield."}
+        return {"ok": False, "error": "Could not fetch any deck details."}
 
     # build_report writes to a file path; use a temp file (Vercel allows /tmp).
     with tempfile.NamedTemporaryFile("w+", suffix=".md", delete=False) as tf:
@@ -112,6 +137,7 @@ def _run_match(payload: dict) -> dict:
         "purchases": len(purchases),
         "scoring": scoring,
         "replacement_mode": replacement_mode,
+        "source": source,
     }
 
 
