@@ -83,3 +83,27 @@ article ul { padding-left: 22px; }
 article li { margin: 4px 0; }
 article em { color: var(--muted); font-style: normal; }
 article strong { color: var(--text); }
+article details {
+  margin: 6px 0 6px 22px;
+  padding: 8px 12px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 13.5px;
+}
+article details > summary {
+  cursor: pointer;
+  color: var(--accent-2);
+  font-weight: 600;
+  user-select: none;
+  list-style: none;
+}
+article details > summary::before {
+  content: "▸"; display: inline-block; margin-right: 8px;
+  transition: transform 0.15s ease;
+}
+article details[open] > summary::before { transform: rotate(90deg); }
+article details > summary::-webkit-details-marker { display: none; }
+article details ul { margin: 8px 0 2px; padding-left: 18px; }
+article details li { margin: 3px 0; color: var(--text); }
+article details li strong { color: var(--accent); }

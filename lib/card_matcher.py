@@ -606,6 +606,174 @@ def prerequisite_multiplier(
     return worst_mult, shortfall_msgs
 
 
+# ---------- Replacement suggestions ----------
+#
+# Given an upgrade card and the target deck, find which existing deck cards
+# are the safest to cut. We score every non-keeper deck card by:
+#
+#   replacement_score = similarity × cuttability
+#
+# where similarity = type overlap + shared theme categories + CMC closeness
+# (+ small TF-IDF cosine if available), and cuttability rewards cards whose
+# role is heavily duplicated elsewhere in the deck (redundant payoffs are
+# safer to drop) and penalizes cards we never want to suggest cutting
+# (commanders, lands, the candidate's literal duplicates).
+
+# Keepers we will never suggest cutting.
+_NEVER_CUT_TYPES = {"Land"}
+
+
+def _is_commander_card(card: dict, deck: dict) -> bool:
+    cmd = (deck.get("commander") or "").lower()
+    if not cmd:
+        return False
+    # Commander field may be "A // B" for partners/backgrounds.
+    parts = [p.strip() for p in cmd.replace("//", "/").split("/")]
+    nm = (card.get("name") or "").lower()
+    return any(nm == p for p in parts if p)
+
+
+def _cmc_proximity(a: float, b: float) -> float:
+    """Return a 0..1 score; 1.0 if same CMC, 0 if >=4 apart."""
+    diff = abs(float(a) - float(b))
+    if diff >= 4:
+        return 0.0
+    return 1.0 - (diff / 4.0)
+
+
+def _role_redundancy(deck_card: dict, deck_cards: dict, theme_keywords: list[str]) -> int:
+    """
+    How many OTHER cards in the deck share at least one theme keyword with
+    this card AND at least one card type? Used as the cuttability signal:
+    a redundant payoff is safer to drop.
+    """
+    dc_themes = themes_of(deck_card.get("oracle_text") or "", theme_keywords)
+    if not dc_themes:
+        return 0
+    dc_types = types_of(deck_card.get("type_line") or "")
+    if not dc_types:
+        return 0
+    count = 0
+    for k, other in deck_cards.items():
+        if other is deck_card:
+            continue
+        if (other.get("name") or "").lower() == (deck_card.get("name") or "").lower():
+            continue
+        other_themes = themes_of(other.get("oracle_text") or "", theme_keywords)
+        if not (dc_themes & other_themes):
+            continue
+        other_types = types_of(other.get("type_line") or "")
+        if dc_types & other_types:
+            count += 1
+    return count
+
+
+def find_replacements(
+    upgrade_card: dict,
+    deck: dict,
+    cfg: dict,
+    tfidf: "TfidfScorer | None" = None,
+    top_k: int = 3,
+) -> list[dict]:
+    """
+    Return up to `top_k` cards from `deck` that are the safest to cut in
+    favor of `upgrade_card`, sorted best-first.
+
+    Each entry: {name, score, similarity, cuttability, reasons}.
+    """
+    keywords = cfg["theme_keywords"]
+    up_types = types_of(upgrade_card.get("type_line") or "")
+    up_themes = themes_of(upgrade_card.get("oracle_text") or "", keywords)
+    up_cmc = float(upgrade_card.get("cmc") or 0.0)
+    up_name_norm = normalize_name(upgrade_card.get("name") or "")
+    up_text_clean = _clean_oracle(upgrade_card.get("oracle_text") or "")
+
+    # Pre-compute TF-IDF vector for the upgrade card once, if available
+    up_vec = tfidf._vectorize(up_text_clean) if (tfidf is not None and up_text_clean) else None
+
+    candidates: list[dict] = []
+    for key, dc in deck["cards"].items():
+        # --- Hard filters: keepers we never suggest cutting ---
+        dc_types = types_of(dc.get("type_line") or "")
+        if dc_types & _NEVER_CUT_TYPES:
+            continue
+        if _is_commander_card(dc, deck):
+            continue
+        # Don't suggest cutting a card with the same name as the upgrade.
+        if normalize_name(dc.get("name") or "") == up_name_norm:
+            continue
+        # Need shared type for slot-equivalence; otherwise swap doesn't make sense.
+        if not (dc_types & up_types):
+            continue
+
+        # --- Similarity ---
+        type_overlap = len(dc_types & up_types)
+        dc_themes = themes_of(dc.get("oracle_text") or "", keywords)
+        shared_themes = up_themes & dc_themes
+        theme_overlap = len(shared_themes)
+        dc_cmc = float(dc.get("cmc") or 0.0)
+        cmc_prox = _cmc_proximity(up_cmc, dc_cmc)
+
+        sim_tfidf = 0.0
+        if up_vec and tfidf is not None:
+            dc_text = _clean_oracle(dc.get("oracle_text") or "")
+            dc_vec = tfidf._vectorize(dc_text) if dc_text else None
+            if dc_vec:
+                sim_tfidf = TfidfScorer._cosine(up_vec, dc_vec)  # 0..1
+
+        # Weighted similarity score (0..~10 range typically)
+        similarity = (
+            1.0 * type_overlap
+            + 2.0 * theme_overlap
+            + 1.5 * cmc_prox
+            + 4.0 * sim_tfidf
+        )
+        if similarity <= 0:
+            continue
+
+        # --- Cuttability ---
+        # More redundant roles in the deck = safer cut. Diminishing returns
+        # past a few duplicates.
+        redundancy = _role_redundancy(dc, deck["cards"], keywords)
+        # 1 redundant peer = +0.4, plateau at ~+1.5.
+        cuttability = 1.0 + min(1.5, 0.4 * redundancy)
+        # High-CMC marginal cards are slightly more cuttable.
+        if dc_cmc >= 5 and theme_overlap == 0:
+            cuttability *= 0.9  # actually a small penalty — if it shares no theme, it's risky
+        if dc_cmc >= 5 and theme_overlap >= 1 and redundancy >= 2:
+            cuttability *= 1.15  # expensive AND redundant: safer to drop
+
+        final = similarity * cuttability
+
+        # Reasons
+        reasons: list[str] = []
+        if shared_themes:
+            sample = list(shared_themes)[:3]
+            reasons.append("same role: " + ", ".join(sample))
+        if redundancy >= 1:
+            shown = f"{redundancy}" if redundancy < 10 else "10+"
+            reasons.append(f"{shown} similar payoff(s) already in deck")
+        if cmc_prox >= 0.75:
+            reasons.append(f"close CMC ({dc_cmc:g} vs {up_cmc:g})")
+        if sim_tfidf > 0.05:
+            reasons.append(f"text overlap {sim_tfidf:.2f}")
+
+        candidates.append({
+            "name": dc.get("name"),
+            "type_line": dc.get("type_line"),
+            "cmc": dc_cmc,
+            "score": round(final, 2),
+            "similarity": round(similarity, 2),
+            "cuttability": round(cuttability, 2),
+            "redundancy": redundancy,
+            "shared_themes": sorted(shared_themes),
+            "reasons": reasons,
+        })
+
+    candidates.sort(key=lambda c: -c["score"])
+    return candidates[:top_k]
+
+
 def score_upgrade_keyword(
     card: dict,
     deck_cards: dict,
@@ -940,7 +1108,7 @@ def build_report(
     lines.append("")
 
     direct_hit_summary: dict[str, list[str]] = defaultdict(list)
-    upgrade_summary: dict[str, list[tuple[str, float]]] = defaultdict(list)
+    upgrade_summary: dict[str, list[tuple[str, float, list[dict]]]] = defaultdict(list)
     unresolved: list[str] = []
     banned: list[str] = []
 
@@ -1018,8 +1186,21 @@ def build_report(
         if scored:
             lines.append("**Fits well in:**")
             for score, d, reasons in scored[:top_n]:
-                lines.append(f"- [{d['name']}]({d['url']}) — score {score}; " + "; ".join(reasons))
-                upgrade_summary[d["name"]].append((info["name"], score))
+                replacements = find_replacements(info, d, cfg, tfidf, top_k=3)
+                bullet = (
+                    f"- [{d['name']}]({d['url']}) \u2014 score {score}; "
+                    + "; ".join(reasons)
+                )
+                if replacements:
+                    bullet += "\n  <details><summary>safe cuts to consider</summary>\n\n"
+                    for r in replacements:
+                        rline = f"  - **{r['name']}** _(CMC {r['cmc']:g})_ \u2014 score {r['score']}"
+                        if r["reasons"]:
+                            rline += "; " + "; ".join(r["reasons"])
+                        bullet += rline + "\n"
+                    bullet += "\n  </details>"
+                lines.append(bullet)
+                upgrade_summary[d["name"]].append((info["name"], score, replacements))
             lines.append("")
         elif not hits:
             legal_decks = [d["name"] for d in decks if color_legal(info["color_identity"], d["color_identity"])]
@@ -1042,8 +1223,17 @@ def build_report(
         if up:
             up_sorted = sorted(up, key=lambda x: -x[1])
             lines.append(f"**Upgrade candidates ({len(up_sorted)}):**")
-            for name, score in up_sorted:
+            for entry in up_sorted:
+                name, score, replacements = entry
                 lines.append(f"- {name} (score {score})")
+                if replacements:
+                    lines.append("  <details><summary>safe cuts to consider</summary>\n")
+                    for r in replacements:
+                        rline = f"  - **{r['name']}** _(CMC {r['cmc']:g})_ \u2014 score {r['score']}"
+                        if r["reasons"]:
+                            rline += "; " + "; ".join(r["reasons"])
+                        lines.append(rline)
+                    lines.append("\n  </details>")
         lines.append("")
 
     # Footnotes
