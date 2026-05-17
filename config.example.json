@@ -1,0 +1,38 @@
+{
+  "_comment": "All fields optional. Anything you omit falls back to the built-in default. Lists fully overwrite (they don't merge), so include the full keyword list if you customize it.",
+
+  "fuzzy_match_threshold": 0.88,
+  "scryfall_fuzzy_lookup": true,
+  "enforce_commander_legality": true,
+  "include_commanders_in_legality_check": true,
+
+  "type_weight": 2.0,
+  "theme_weight": 3.0,
+  "top_n": 5,
+
+  "theme_keywords": [
+    "draw a card", "draws a card", "create a treasure", "create a token",
+    "extra combat", "additional combat", "attacks", "attacking",
+    "sacrifice", "dies", "enters the battlefield", "etb",
+    "counter target", "copy target", "exile target", "destroy target",
+    "+1/+1 counter", "proliferate", "scry", "surveil", "mill",
+    "lifelink", "deathtouch", "flying", "trample", "haste", "menace",
+    "vigilance", "indestructible", "hexproof", "ward", "flash",
+    "vehicle", "crew", "equipment", "equip", "aura", "enchant creature",
+    "artifact you control", "artifacts you control",
+    "soldier", "human", "wizard", "knight", "warrior", "samurai",
+    "dragon", "demon", "angel", "spirit", "zombie", "vampire",
+    "mana of any color", "add {", "search your library for a", "land card",
+    "reduce the cost", "costs {", "less to cast",
+
+    "landfall", "a land enters", "land enters the battlefield",
+    "play an additional land", "return target land", "return a land",
+
+    "combat damage to a player", "deals combat damage", "deals damage to a player",
+    "deals damage to any", "deals damage to itself",
+    "whenever you cast", "noncreature spell", "instant or sorcery",
+
+    "copy that spell", "copy target instant", "copy target sorcery",
+    "copy target spell", "create a copy"
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "version": 2,
+  "functions": {
+    "api/match.py": {
+      "runtime": "@vercel/python@4.3.0",
+      "maxDuration": 60
+    }
+  },
+  "routes": [
+    { "src": "/api/match", "dest": "/api/match.py" },
+    { "src": "/", "dest": "/public/index.html" },
+    { "src": "/(.*)", "dest": "/public/$1" }
+  ]
+}

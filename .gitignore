@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+*.pyo
+.vercel
+.env
+.env.local
+node_modules/
+decks_cache.json
+report*.md
+!MATCHER.md
+!README.md
+.DS_Store
