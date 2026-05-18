@@ -3,7 +3,8 @@
   "functions": {
     "api/match.py": {
       "runtime": "@vercel/python@4.3.0",
-      "maxDuration": 60
+      "maxDuration": 60,
+      "includeFiles": "data/**"
     }
   },
   "routes": [

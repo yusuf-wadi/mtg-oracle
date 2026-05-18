@@ -1,0 +1,47 @@
+name: Refresh Scryfall oracle data
+
+# Refreshes the slim, gzipped Scryfall oracle index (data/oracle-slim.json.gz)
+# that the matcher ships with. Runs on the 1st of every month and can be
+# triggered manually whenever a new set drops.
+
+on:
+  schedule:
+    # 09:00 UTC on the 1st of every month
+    - cron: "0 9 1 * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+concurrency:
+  group: refresh-oracle
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Run refresh script
+        run: python scripts/refresh_oracle.py
+
+      - name: Commit and push if changed
+        run: |
+          set -e
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if [ -z "$(git status --porcelain data/)" ]; then
+            echo "No changes — bulk data already up to date."
+            exit 0
+          fi
+          updated_at=$(python -c "import json; print(json.load(open('data/oracle-meta.json'))['updated_at'])")
+          git add data/oracle-slim.json.gz data/oracle-meta.json
+          git commit -m "chore(data): refresh Scryfall oracle index (updated_at=${updated_at})"
+          git push

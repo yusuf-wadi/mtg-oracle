@@ -41,17 +41,47 @@ Vercel Hobby caps function execution at 60s. The first ~6 deck fetches plus scor
 ## Project layout
 
 ```
-api/match.py            Vercel Python serverless function
-lib/card_matcher.py     Matching engine (importable)
+api/match.py             Vercel Python serverless function
+lib/card_matcher.py      Matching engine (importable)
 lib/__init__.py
-public/index.html       GUI
+public/index.html        GUI
 public/app.js
 public/style.css
-config.example.json     Theme keywords + scoring weights
+config.example.json      Theme keywords + scoring weights
+data/oracle-slim.json.gz Scryfall oracle bulk index (~3 MB gz, refreshed monthly)
+data/oracle-meta.json    Bulk-data manifest (updated_at, sha256, card count)
+scripts/refresh_oracle.py  Fetches & slims the latest oracle bulk file
+.github/workflows/refresh-oracle.yml  Monthly + manual-dispatch refresh
 vercel.json
 requirements.txt
-MATCHER.md              Engine docs (CLI, config, scoring details)
+MATCHER.md               Engine docs (CLI, config, scoring details)
 ```
+
+## Scryfall oracle data
+
+Card lookups (type lines, oracle text, color identity, legalities) come from a
+local copy of Scryfall's [`oracle_cards` bulk file](https://scryfall.com/docs/api/bulk-data),
+slimmed to the fields the matcher needs. The slim file is ~3 MB gzipped
+(~37K cards) and ships in the deployment, so per-card HTTP requests and the
+associated rate limits are avoided.
+
+Lookup order:
+
+1. In-process cache
+2. Local bulk index (`data/oracle-slim.json.gz`)
+3. Scryfall HTTP `/cards/named` (fallback for spoilers post-refresh or typos
+   that need fuzzy resolution; still respects the 80 ms politeness gap)
+
+**Refresh the bulk data:**
+
+```
+python scripts/refresh_oracle.py          # no-op if remote unchanged
+python scripts/refresh_oracle.py --force  # always re-download
+```
+
+The GitHub Actions workflow runs the same script at 09:00 UTC on the 1st of
+each month and commits the updated artifact. Trigger it manually after a set
+release via the **Actions → Refresh Scryfall oracle data → Run workflow** button.
 
 ## License
 

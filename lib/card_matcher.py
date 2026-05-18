@@ -100,6 +100,12 @@ _ARCHIDEKT_COMMANDER_FORMAT = 3
 SCRYFALL_NAMED_FUZZY = "https://api.scryfall.com/cards/named?fuzzy={name}"
 SCRYFALL_NAMED_EXACT = "https://api.scryfall.com/cards/named?exact={name}"
 
+# Local Scryfall bulk oracle index. Built by scripts/refresh_oracle.py.
+# We ship the gz file with the repo so deployments don't need outbound network
+# to look up the ~37K oracle cards.
+_BULK_SLIM_PATH = Path(__file__).resolve().parent.parent / "data" / "oracle-slim.json.gz"
+_BULK_META_PATH = Path(__file__).resolve().parent.parent / "data" / "oracle-meta.json"
+
 HEADERS = {
     # A real-browser UA is required; the bare default is Cloudflare-blocked.
     "User-Agent": (
@@ -549,38 +555,166 @@ def _archidekt_deck_color_identity(deck: dict) -> set[str]:
 
 _scryfall_cache: dict[str, dict | None] = {}
 
+# Lazy-loaded local bulk index. Two dicts to support both exact and
+# face-name (split / MDFC / adventure / transform) lookups.
+_bulk_index: dict[str, dict] | None = None      # normalized full name -> raw card
+_bulk_face_index: dict[str, dict] | None = None  # normalized face name -> raw card
+_bulk_meta: dict | None = None
+_bulk_load_failed: bool = False
 
-def lookup_scryfall(name: str, fuzzy: bool = True) -> dict | None:
-    cache_key = name.lower().strip()
-    if cache_key in _scryfall_cache:
-        return _scryfall_cache[cache_key]
+
+def _bulk_normalize(name: str) -> str:
+    """Normalize a card name for index lookup.
+
+    Lowercase, strip whitespace, collapse internal whitespace, and treat
+    'A / B' / 'A/B' / 'A//B' as the canonical 'a // b' Scryfall form.
+    """
+    s = (name or "").lower().strip()
+    # Normalize split-card separator variants to ' // '
+    s = re.sub(r"\s*/{1,2}\s*", " // ", s)
+    s = re.sub(r"\s+", " ", s)
+    return s
+
+
+def _load_bulk_index() -> tuple[dict[str, dict], dict[str, dict]]:
+    """Load and index the slim Scryfall oracle bulk file (lazy + cached).
+
+    Returns ({full_name -> card}, {face_name -> card}). If the bulk file is
+    missing or unreadable, returns empty dicts and sets _bulk_load_failed so
+    we fall straight through to the HTTP path on every lookup.
+    """
+    global _bulk_index, _bulk_face_index, _bulk_meta, _bulk_load_failed
+    if _bulk_index is not None and _bulk_face_index is not None:
+        return _bulk_index, _bulk_face_index
+    if _bulk_load_failed:
+        return {}, {}
+    try:
+        import gzip
+        if not _BULK_SLIM_PATH.exists():
+            print(f"  bulk oracle file not found at {_BULK_SLIM_PATH}; falling back to HTTP",
+                  file=sys.stderr)
+            _bulk_load_failed = True
+            _bulk_index, _bulk_face_index = {}, {}
+            return _bulk_index, _bulk_face_index
+        t0 = time.time()
+        with gzip.open(_BULK_SLIM_PATH, "rb") as f:
+            cards = json.loads(f.read())
+        full: dict[str, dict] = {}
+        faces: dict[str, dict] = {}
+        for c in cards:
+            n = _bulk_normalize(c.get("name") or "")
+            if n:
+                full.setdefault(n, c)
+            for face in (c.get("card_faces") or []):
+                fn = _bulk_normalize(face.get("name") or "")
+                if fn:
+                    faces.setdefault(fn, c)
+        _bulk_index, _bulk_face_index = full, faces
+        if _BULK_META_PATH.exists():
+            try:
+                _bulk_meta = json.loads(_BULK_META_PATH.read_text())
+            except Exception:
+                _bulk_meta = None
+        elapsed = time.time() - t0
+        meta_age = (_bulk_meta or {}).get("updated_at", "unknown")
+        print(f"  loaded bulk oracle index: {len(cards)} cards "
+              f"({len(full)} full + {len(faces)} face keys) in {elapsed:.2f}s "
+              f"[updated_at={meta_age}]",
+              file=sys.stderr)
+        return _bulk_index, _bulk_face_index
+    except Exception as e:
+        print(f"  bulk oracle load failed ({e}); falling back to HTTP",
+              file=sys.stderr)
+        _bulk_load_failed = True
+        _bulk_index, _bulk_face_index = {}, {}
+        return _bulk_index, _bulk_face_index
+
+
+def _info_from_bulk(card: dict, input_name: str) -> dict:
+    """Shape a slim bulk-index card into the dict shape lookup_scryfall returns."""
+    name = card.get("name") or input_name
+    return {
+        "name": name,
+        "type_line": _merged_type_line(card),
+        "color_identity": set(card.get("color_identity") or []),
+        "oracle_text": _merged_oracle(card),
+        "cmc": card.get("cmc"),
+        "legalities": card.get("legalities") or {},
+        "input": input_name,
+        "faces": face_names(name),
+        "layout": card.get("layout"),
+    }
+
+
+def _lookup_bulk(name: str) -> dict | None:
+    """Look up a card in the local bulk index. Returns the shaped info dict
+    or None if the name isn't present."""
+    full, faces = _load_bulk_index()
+    if not full and not faces:
+        return None
+    key = _bulk_normalize(name)
+    card = full.get(key) or faces.get(key)
+    if card is None:
+        # Last-ditch: 'A' alone matching 'a // b' (split half typed without partner).
+        # Try matching the first face in any split-card name.
+        if " // " not in key:
+            for full_key, c in full.items():
+                if " // " in full_key and full_key.split(" // ", 1)[0] == key:
+                    card = c
+                    break
+        if card is None:
+            return None
+    return _info_from_bulk(card, name)
+
+
+def _lookup_scryfall_http(name: str, fuzzy: bool = True) -> dict | None:
+    """Hit the Scryfall HTTP named endpoint. Respects the 80ms politeness gap.
+    Used only as a fallback when the bulk index misses (e.g. spoilers released
+    after the last bulk refresh, or user typos that fuzzy can resolve)."""
     url = (SCRYFALL_NAMED_FUZZY if fuzzy else SCRYFALL_NAMED_EXACT).format(
         name=requests.utils.quote(name)
     )
-    info: dict | None = None
     try:
         r = requests.get(
             url,
             headers={"User-Agent": "card-matcher/2.0", "Accept": "application/json"},
             timeout=20,
         )
-        if r.status_code == 200:
-            data = r.json()
-            info = {
-                "name": data.get("name"),
-                "type_line": _merged_type_line(data),
-                "color_identity": set(data.get("color_identity") or []),
-                "oracle_text": _merged_oracle(data),
-                "cmc": data.get("cmc"),
-                "legalities": data.get("legalities") or {},
-                "input": name,
-                "faces": face_names(data.get("name") or name),
-                "layout": data.get("layout"),
-            }
+        if r.status_code != 200:
+            return None
+        data = r.json()
+        return {
+            "name": data.get("name"),
+            "type_line": _merged_type_line(data),
+            "color_identity": set(data.get("color_identity") or []),
+            "oracle_text": _merged_oracle(data),
+            "cmc": data.get("cmc"),
+            "legalities": data.get("legalities") or {},
+            "input": name,
+            "faces": face_names(data.get("name") or name),
+            "layout": data.get("layout"),
+        }
     except requests.RequestException:
-        info = None
+        return None
+    finally:
+        time.sleep(0.08)  # Scryfall asks ~80ms between requests
+
+
+def lookup_scryfall(name: str, fuzzy: bool = True) -> dict | None:
+    """Resolve a card by name.
+
+    Order of operations:
+      1. In-process cache.
+      2. Local Scryfall bulk oracle index (no network).
+      3. Scryfall HTTP named endpoint as a fallback (rate-limited).
+    """
+    cache_key = name.lower().strip()
+    if cache_key in _scryfall_cache:
+        return _scryfall_cache[cache_key]
+    info = _lookup_bulk(name)
+    if info is None:
+        info = _lookup_scryfall_http(name, fuzzy=fuzzy)
     _scryfall_cache[cache_key] = info
-    time.sleep(0.08)  # Scryfall asks ~80ms between requests
     return info
 
 
