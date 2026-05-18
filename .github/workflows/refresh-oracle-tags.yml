@@ -1,0 +1,55 @@
+name: Refresh Scryfall oracle tags
+
+# Rebuilds data/oracle-tags.json.gz by walking every ORACLE_CARD_TAG via
+# tagger.scryfall.com's GraphQL endpoint. The full fetch is slow (~60-100
+# min) because the endpoint rate-limits aggressively; the script handles
+# 429s with exponential backoff and checkpoints progress so a stalled run
+# can resume.
+#
+# Scheduled to run on the 2nd of every month so it doesn't collide with
+# the oracle-bulk refresh (which runs on the 1st).
+
+on:
+  schedule:
+    - cron: "0 9 2 * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+concurrency:
+  group: refresh-oracle-tags
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Run refresh script
+        run: python scripts/refresh_oracle_tags.py
+
+      - name: Commit and push if changed
+        run: |
+          set -e
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # _oracle-tags-progress.json is a transient checkpoint and should not be
+          # committed. The refresh script removes it on success but guard anyway.
+          rm -f data/_oracle-tags-progress.json
+          if [ -z "$(git status --porcelain data/oracle-tags.json.gz data/oracle-tags-meta.json)" ]; then
+            echo "No changes — oracle-tag index already up to date."
+            exit 0
+          fi
+          fetched_at=$(python -c "import json; print(json.load(open('data/oracle-tags-meta.json'))['fetched_at'])")
+          git add data/oracle-tags.json.gz data/oracle-tags-meta.json
+          git commit -m "chore(data): refresh oracle-tag index (fetched_at=${fetched_at})"
+          git push

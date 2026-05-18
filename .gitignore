@@ -10,3 +10,6 @@ report*.md
 !MATCHER.md
 !README.md
 .DS_Store
+
+# transient checkpoint written by scripts/refresh_oracle_tags.py
+data/_oracle-tags-progress.json

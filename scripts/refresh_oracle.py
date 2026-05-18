@@ -38,7 +38,9 @@ META_PATH = DATA_DIR / "oracle-meta.json"
 
 # Fields we keep from each Scryfall card. Everything else (image URIs, set
 # data, prices, rulings, etc.) is dropped to keep the artifact small.
-KEEP_FIELDS = ("name", "type_line", "oracle_text", "color_identity",
+# oracle_id is included so the oracle-tag index (data/oracle-tags.json.gz),
+# which keys on oracle_id, can be joined back to bulk-oracle cards by name.
+KEEP_FIELDS = ("oracle_id", "name", "type_line", "oracle_text", "color_identity",
                "cmc", "legalities", "layout")
 FACE_FIELDS = ("name", "type_line", "oracle_text")
 

@@ -50,8 +50,12 @@ public/style.css
 config.example.json      Theme keywords + scoring weights
 data/oracle-slim.json.gz Scryfall oracle bulk index (~3 MB gz, refreshed monthly)
 data/oracle-meta.json    Bulk-data manifest (updated_at, sha256, card count)
+data/oracle-tags.json.gz  Oracle-tag index (oracle_id → tag slugs)
+data/oracle-tags-meta.json  Tag-index fetch metadata
 scripts/refresh_oracle.py  Fetches & slims the latest oracle bulk file
+scripts/refresh_oracle_tags.py  Fetches the oracle-tag index from tagger.scryfall.com
 .github/workflows/refresh-oracle.yml  Monthly + manual-dispatch refresh
+.github/workflows/refresh-oracle-tags.yml  Monthly + manual-dispatch tag refresh
 vercel.json
 requirements.txt
 MATCHER.md               Engine docs (CLI, config, scoring details)
@@ -82,6 +86,34 @@ python scripts/refresh_oracle.py --force  # always re-download
 The GitHub Actions workflow runs the same script at 09:00 UTC on the 1st of
 each month and commits the updated artifact. Trigger it manually after a set
 release via the **Actions → Refresh Scryfall oracle data → Run workflow** button.
+
+## Oracle tags
+
+Scryfall's bulk-data feed does **not** include the user-curated oracle tags
+(`otag:ramp`, `otag:removal-spot`, `otag:tutor`, etc.) shown on
+[tagger.scryfall.com](https://tagger.scryfall.com). We fetch them via the
+undocumented GraphQL endpoint at `https://tagger.scryfall.com/graphql`,
+enumerate every `ORACLE_CARD_TAG`, walk each tag's taggings (with
+`descendants:false` so edges are counted once), and invert to
+`oracle_id → [tag_slug, ...]`.
+
+The artifact ships as `data/oracle-tags.json.gz` and is loaded lazily by
+the matcher; `card_tags(oracle_id)` returns the set of slugs for any
+resolved card. If the file is missing the matcher silently falls back to
+oracle-text matching.
+
+**Refresh the tag index:**
+
+```
+python scripts/refresh_oracle_tags.py            # full refresh (slow!)
+python scripts/refresh_oracle_tags.py --resume   # resume after a crash
+python scripts/refresh_oracle_tags.py --tag-limit 200  # debug subset
+```
+
+The full fetch takes roughly an hour because the tagger endpoint rate-
+limits aggressively. The script handles 429s with exponential backoff and
+checkpoints progress every 25 tags so partial runs can resume cleanly.
+The GitHub Action runs at 09:00 UTC on the 2nd of each month.
 
 ## License
 

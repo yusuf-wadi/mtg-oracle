@@ -106,6 +106,12 @@ SCRYFALL_NAMED_EXACT = "https://api.scryfall.com/cards/named?exact={name}"
 _BULK_SLIM_PATH = Path(__file__).resolve().parent.parent / "data" / "oracle-slim.json.gz"
 _BULK_META_PATH = Path(__file__).resolve().parent.parent / "data" / "oracle-meta.json"
 
+# Scryfall oracle-tag index. Built by scripts/refresh_oracle_tags.py via the
+# tagger.scryfall.com GraphQL endpoint (since bulk-data omits tags).
+# Schema: {"tags": [slug, ...], "cards": {oracle_id: [tag_idx, ...]}}
+_TAG_INDEX_PATH = Path(__file__).resolve().parent.parent / "data" / "oracle-tags.json.gz"
+_TAG_META_PATH = Path(__file__).resolve().parent.parent / "data" / "oracle-tags-meta.json"
+
 HEADERS = {
     # A real-browser UA is required; the bare default is Cloudflare-blocked.
     "User-Agent": (
@@ -559,8 +565,15 @@ _scryfall_cache: dict[str, dict | None] = {}
 # face-name (split / MDFC / adventure / transform) lookups.
 _bulk_index: dict[str, dict] | None = None      # normalized full name -> raw card
 _bulk_face_index: dict[str, dict] | None = None  # normalized face name -> raw card
+_bulk_by_oracle_id: dict[str, dict] = {}        # oracle_id -> raw card
 _bulk_meta: dict | None = None
 _bulk_load_failed: bool = False
+
+# Lazy-loaded oracle-tag index (see _TAG_INDEX_PATH).
+_tag_slugs: list[str] | None = None             # idx -> slug
+_tag_card_index: dict[str, list[int]] | None = None  # oracle_id -> [idx,...]
+_tag_meta: dict | None = None
+_tag_load_failed: bool = False
 
 
 def _bulk_normalize(name: str) -> str:
@@ -609,6 +622,9 @@ def _load_bulk_index() -> tuple[dict[str, dict], dict[str, dict]]:
                 fn = _bulk_normalize(face.get("name") or "")
                 if fn:
                     faces.setdefault(fn, c)
+        # Stash oracle_id -> full card for fast tag lookups.
+        global _bulk_by_oracle_id
+        _bulk_by_oracle_id = {c["oracle_id"]: c for c in cards if c.get("oracle_id")}
         _bulk_index, _bulk_face_index = full, faces
         if _BULK_META_PATH.exists():
             try:
@@ -630,11 +646,69 @@ def _load_bulk_index() -> tuple[dict[str, dict], dict[str, dict]]:
         return _bulk_index, _bulk_face_index
 
 
+def _load_tag_index() -> tuple[list[str], dict[str, list[int]]]:
+    """Load the slim oracle-tag index lazily. Tolerant of missing data."""
+    global _tag_slugs, _tag_card_index, _tag_meta, _tag_load_failed
+    if _tag_slugs is not None and _tag_card_index is not None:
+        return _tag_slugs, _tag_card_index
+    if _tag_load_failed:
+        return [], {}
+    try:
+        import gzip
+        if not _TAG_INDEX_PATH.exists():
+            print(f"  oracle-tag index not found at {_TAG_INDEX_PATH}; tags disabled",
+                  file=sys.stderr)
+            _tag_load_failed = True
+            _tag_slugs, _tag_card_index = [], {}
+            return _tag_slugs, _tag_card_index
+        t0 = time.time()
+        with gzip.open(_TAG_INDEX_PATH, "rb") as f:
+            data = json.loads(f.read())
+        _tag_slugs = list(data.get("tags") or [])
+        _tag_card_index = dict(data.get("cards") or {})
+        if _TAG_META_PATH.exists():
+            try:
+                _tag_meta = json.loads(_TAG_META_PATH.read_text())
+            except Exception:
+                _tag_meta = None
+        elapsed = time.time() - t0
+        fetched = (_tag_meta or {}).get("fetched_at", "unknown")
+        print(f"  loaded oracle-tag index: {len(_tag_slugs)} tags, "
+              f"{len(_tag_card_index):,} cards in {elapsed:.2f}s "
+              f"[fetched_at={fetched}]",
+              file=sys.stderr)
+        return _tag_slugs, _tag_card_index
+    except Exception as e:
+        print(f"  oracle-tag index load failed ({e}); tags disabled",
+              file=sys.stderr)
+        _tag_load_failed = True
+        _tag_slugs, _tag_card_index = [], {}
+        return _tag_slugs, _tag_card_index
+
+
+def card_tags(oracle_id: str | None) -> set[str]:
+    """Return the set of oracle-tag slugs for a card, by oracle_id.
+
+    Returns an empty set if the tag index isn't loaded, the card has no tags,
+    or oracle_id is falsy. Safe to call anywhere — the index is lazy.
+    """
+    if not oracle_id:
+        return set()
+    slugs, cards = _load_tag_index()
+    if not slugs:
+        return set()
+    idxs = cards.get(oracle_id)
+    if not idxs:
+        return set()
+    return {slugs[i] for i in idxs if 0 <= i < len(slugs)}
+
+
 def _info_from_bulk(card: dict, input_name: str) -> dict:
     """Shape a slim bulk-index card into the dict shape lookup_scryfall returns."""
     name = card.get("name") or input_name
     return {
         "name": name,
+        "oracle_id": card.get("oracle_id"),
         "type_line": _merged_type_line(card),
         "color_identity": set(card.get("color_identity") or []),
         "oracle_text": _merged_oracle(card),
@@ -643,6 +717,7 @@ def _info_from_bulk(card: dict, input_name: str) -> dict:
         "input": input_name,
         "faces": face_names(name),
         "layout": card.get("layout"),
+        "tags": card_tags(card.get("oracle_id")),
     }
 
 
@@ -683,8 +758,10 @@ def _lookup_scryfall_http(name: str, fuzzy: bool = True) -> dict | None:
         if r.status_code != 200:
             return None
         data = r.json()
+        oid = data.get("oracle_id")
         return {
             "name": data.get("name"),
+            "oracle_id": oid,
             "type_line": _merged_type_line(data),
             "color_identity": set(data.get("color_identity") or []),
             "oracle_text": _merged_oracle(data),
@@ -693,6 +770,7 @@ def _lookup_scryfall_http(name: str, fuzzy: bool = True) -> dict | None:
             "input": name,
             "faces": face_names(data.get("name") or name),
             "layout": data.get("layout"),
+            "tags": card_tags(oid),
         }
     except requests.RequestException:
         return None
