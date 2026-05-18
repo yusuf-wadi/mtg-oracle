@@ -14,6 +14,9 @@
   </header>
 
   <form id="f">
+    <div class="form-toolbar">
+      <button type="button" id="clear-all" class="btn-secondary" title="Reset every field">Clear all</button>
+    </div>
     <div class="row">
       <label>
         <span>Username</span>
@@ -63,6 +66,9 @@
     <label>
       <span>Paste your card list <em>(one per line, optional "2x" prefix)</em></span>
       <textarea id="paste" rows="14" placeholder="1x Sram, Senior Edificer&#10;1x Hellkite Charger&#10;Reverberate&#10;..." required></textarea>
+      <div class="field-actions">
+        <button type="button" id="clear-paste" class="btn-secondary" title="Empty the card list">Clear</button>
+      </div>
     </label>
 
     <div class="actions">

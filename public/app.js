@@ -43,6 +43,28 @@ function persist() {
 }
 ["user", "scoring", "replacement_mode", "source", "archidekt_user", "decks", "extra_decks", "paste"].forEach((id) => $(id).addEventListener("input", persist));
 
+// Clear just the card-list paste box.
+$("clear-paste").addEventListener("click", () => {
+  $("paste").value = "";
+  persist();
+  $("paste").focus();
+});
+
+// Clear every input + hide any previous result.
+$("clear-all").addEventListener("click", () => {
+  if (!confirm("Clear every field?")) return;
+  ["user", "archidekt_user", "decks", "extra_decks", "paste"].forEach((id) => { $(id).value = ""; });
+  $("source").value = "moxfield";
+  $("scoring").value = "hybrid";
+  $("replacement_mode").value = "auto";
+  updateArchidektFieldVisibility();
+  persist();
+  result.hidden = true;
+  status.className = "";
+  status.textContent = "";
+  $("user").focus();
+});
+
 form.addEventListener("submit", async (e) => {
   e.preventDefault();
   const user = $("user").value.trim();

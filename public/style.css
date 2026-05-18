@@ -52,6 +52,33 @@ button {
   font: inherit; font-weight: 600; cursor: pointer;
 }
 button:disabled { opacity: 0.55; cursor: not-allowed; }
+
+/* Secondary / ghost buttons (Clear, Clear all) */
+.btn-secondary {
+  background: transparent;
+  color: var(--muted);
+  border: 1px solid var(--border);
+  padding: 6px 12px;
+  font-size: 13px;
+  font-weight: 500;
+  border-radius: 6px;
+}
+.btn-secondary:hover {
+  color: var(--text);
+  border-color: var(--accent);
+  background: var(--panel-2);
+}
+
+.form-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 4px;
+}
+.field-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 6px;
+}
 #status { color: var(--muted); font-size: 13px; }
 #status.err { color: var(--err); }
 #status.ok { color: var(--accent-2); }
