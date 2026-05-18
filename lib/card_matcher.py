@@ -1107,8 +1107,164 @@ def _role_redundancy(deck_card: dict, deck_cards: dict, theme_keywords: list[str
 # primarily on cosine — top-term overlap is a confirmation bonus, not a gate.
 _THEME_ALIGN_COSINE_STRONG = 0.25  # cosine alone is enough at this level
 _THEME_ALIGN_COSINE_THRESHOLD = 0.18  # need shared-top-term to qualify here
+_THEME_ALIGN_COSINE_LOW = 0.10  # tag overlap can promote alignment at this floor
 _THEME_ALIGN_TERM_OVERLAP_MIN = 1
+_THEME_ALIGN_TAG_OVERLAP_MIN = 2  # 2+ tag hits is enough on its own
 _DECK_TOP_TERMS_N = 8
+_DECK_TOP_TAGS_N = 15  # how many of a deck's most common tags define its profile
+_DECK_TAG_MIN_FREQ = 2   # tag must appear on at least this many cards to count
+
+# Tags that say nothing about a deck's strategy and should never count toward
+# alignment. Three categories:
+#   - metadata/trivia (cycle membership, alliteration, name trivia, memes)
+#   - cost mechanics (cheaper/more-expensive-than-mv, full-refund)
+#   - generic ability classes / staple roles that appear in nearly every deck
+#     (removal, spot-removal, ramp staples, generic draw, evasion). These
+#     describe role, not theme — a deck having lots of "spot-removal" tells
+#     us nothing about strategy.
+_TAG_BLACKLIST = frozenset({
+    # Metadata / trivia
+    "alliteration",
+    "meme",
+    "single-english-word-name",
+    # Cost trivia
+    "more-expensive-than-mv",
+    "cheaper-than-mv",
+    "full-refund",
+    # Too-broad ability classes
+    "triggered-ability",
+    "activated-ability",
+    "delayed-trigger",
+    "single-target-instant-sorcery",
+    # Generic role tags — staples, not themes
+    "spot-removal",
+    "removal-creature",
+    "removal-nonland",
+    "removal-bounce",
+    "removal-artifact",
+    "removal-enchantment",
+    "sweeper-one-sided",
+    "pure-draw",
+    "hand-positive",
+    "hand-neutral",
+    "evasion",            # most creatures have some — too broad
+    "pseudo-fog",
+})
+# Tag prefixes that match cycle/printing metadata across the index.
+_TAG_BLACKLIST_PREFIXES = (
+    "cycle-",
+    "printed-in-",
+    "reprinted-",
+)
+
+
+def _is_meaningful_tag(tag: str) -> bool:
+    if tag in _TAG_BLACKLIST:
+        return False
+    return not any(tag.startswith(p) for p in _TAG_BLACKLIST_PREFIXES)
+
+
+def _meaningful_tags(tags) -> set[str]:
+    """Filter a tag set down to strategy-bearing tags."""
+    if not tags:
+        return set()
+    return {t for t in tags if _is_meaningful_tag(t)}
+
+
+# Tag groups whose members are strategically interchangeable. If an upgrade
+# has any tag in a group and the deck has any other tag in the same group,
+# we count that as a shared tag. This bridges close-but-not-identical themes
+# like 'extra-combat-phase' (more attack steps) and 'attacking-matters'
+# (rewards triggered by attacking).
+_TAG_SYNONYM_GROUPS: tuple[frozenset[str], ...] = (
+    # Combat-themed: extra attacks, attack triggers, attack-rewarding effects.
+    # 'combat-ramp' (rituals tied to combat, e.g. Bear Umbra) belongs here, not
+    # with generic ramp — it pays off when you attack, like Isshin.
+    frozenset({"extra-combat-phase", "attacking-matters", "attack-trigger",
+               "attacking-matters-self", "combat-ramp"}),
+    # Generic mana acceleration (NOT combat-tied).
+    frozenset({"ramp", "land-ramp", "mana-rock", "repeatable-treasures"}),
+    frozenset({"mill", "self-mill", "mill-self"}),
+    frozenset({"sacrifice", "sacrifice-outlet", "aristocrats",
+               "creature-death-trigger"}),
+    frozenset({"tokens", "creature-tokens", "repeatable-creature-tokens",
+               "token-creator"}),
+    frozenset({"counter-spell", "hard-counter", "soft-counter"}),
+    frozenset({"graveyard-recursion", "reanimator", "recurs-creature",
+               "recurs-from-graveyard"}),
+    frozenset({"+1-1-counters", "counters-matter", "proliferate"}),
+    frozenset({"lifegain", "repeatable-lifegain", "lifegain-matters"}),
+    frozenset({"discard", "discard-outlet", "discard-matters", "madness"}),
+)
+
+
+def _expand_with_synonyms(tags: set[str]) -> set[str]:
+    """Add synonym-group siblings to a tag set so overlap checks bridge
+    closely related strategies (e.g. extra-combat <-> attacking-matters)."""
+    if not tags:
+        return set()
+    expanded = set(tags)
+    for group in _TAG_SYNONYM_GROUPS:
+        if tags & group:
+            expanded |= group
+    return expanded
+
+
+# Per-deck tag profile cache, keyed by id(deck). The profile is the set of
+# tags that appear on at least _DECK_TAG_MIN_FREQ cards in the deck, capped at
+# _DECK_TOP_TAGS_N entries by frequency. Computed lazily and reused across all
+# (upgrade, deck) pairs in a single run.
+_DECK_TAG_PROFILE_CACHE: dict[int, dict] = {}
+
+
+def _build_deck_tag_profile(deck: dict) -> dict:
+    """Return a dict {top_tags: set[str], counts: dict[str, int]} for a deck.
+
+    Cards already carry their tags via lookup_scryfall, but for decks we don't
+    have direct tag data — we look each card up by oracle_id (preserved on
+    bulk-loaded card dicts). Cards without an oracle_id contribute nothing.
+    """
+    cached = _DECK_TAG_PROFILE_CACHE.get(id(deck))
+    if cached is not None:
+        return cached
+
+    counts: dict[str, int] = defaultdict(int)
+    for c in deck.get("cards", {}).values():
+        if (c.get("name") or "").lower() in _BASIC_LANDS:
+            continue
+        # Cards from the bulk index carry oracle_id; deck-fetched cards may
+        # not. card_tags() handles None gracefully.
+        oid = c.get("oracle_id")
+        if not oid:
+            # Last-resort: try to recover oracle_id by looking the name up.
+            name = c.get("name")
+            if name:
+                info = _lookup_bulk(name)
+                if info:
+                    oid = info.get("oracle_id")
+                    c["oracle_id"] = oid  # cache on the card dict
+        if not oid:
+            continue
+        for tag in card_tags(oid):
+            if _is_meaningful_tag(tag):
+                counts[tag] += 1
+
+    # Keep tags that appear on enough cards, ranked by frequency.
+    qualifying = [(t, n) for t, n in counts.items() if n >= _DECK_TAG_MIN_FREQ]
+    qualifying.sort(key=lambda kv: (-kv[1], kv[0]))
+    raw_top_tags = {t for t, _ in qualifying[:_DECK_TOP_TAGS_N]}
+    # Expand top tags via synonym groups so a deck with 'attack-trigger' but
+    # no 'extra-combat-phase' still recognizes Aggravated Assault as on-theme.
+    top_tags = _expand_with_synonyms(raw_top_tags)
+    profile = {"top_tags": top_tags, "counts": dict(counts),
+               "raw_top_tags": raw_top_tags}
+    _DECK_TAG_PROFILE_CACHE[id(deck)] = profile
+    return profile
+
+
+def deck_top_tags(deck: dict) -> set[str]:
+    """Public helper: return the set of meaningful, frequent tags for a deck."""
+    return _build_deck_tag_profile(deck)["top_tags"]
 
 
 def _detect_alignment(
@@ -1117,22 +1273,41 @@ def _detect_alignment(
     tfidf: "TfidfScorer",
 ) -> tuple[bool, float, list[str]]:
     """
-    Returns (is_aligned, cosine, shared_top_terms).
+    Returns (is_aligned, cosine, shared_signals).
 
-    The upgrade is 'aligned' with the deck's theme when (a) its TF-IDF cosine
-    against the deck profile is above the alignment threshold AND (b) at
-    least one of its strong terms is in the deck's top-N TF-IDF terms.
+    The upgrade is 'aligned' with the deck's theme when any of the following:
+      1. Strong TF-IDF cosine alone (>= _THEME_ALIGN_COSINE_STRONG), OR
+      2. Moderate cosine AND a shared top-N TF-IDF term, OR
+      3. Low cosine BUT a shared top-N oracle TAG (semantic backstop), OR
+      4. >= _THEME_ALIGN_TAG_OVERLAP_MIN shared deck tags regardless of cosine.
+
+    The fallback paths (3, 4) close the gap where TF-IDF misses semantic
+    matches — e.g. Aggravated Assault vs an Isshin deck shares the
+    `extra-combat-phase` tag without sharing oracle-text n-grams.
+
+    `shared_signals` is the union of shared top-terms and shared top-tags,
+    sorted for stable display in reports.
     """
     up_text = _clean_oracle(upgrade_card.get("oracle_text") or "")
+    up_tags = _meaningful_tags(upgrade_card.get("tags") or set())
+    deck_tags = deck_top_tags(deck)
+    shared_tags = up_tags & deck_tags
+
     if not up_text:
-        return False, 0.0, []
+        # Vanilla creature — if its tags match, still consider it aligned.
+        if len(shared_tags) >= _THEME_ALIGN_TAG_OVERLAP_MIN:
+            return True, 0.0, sorted(shared_tags)
+        return False, 0.0, sorted(shared_tags)
+
     up_vec = tfidf._vectorize(up_text)
     if not up_vec:
-        return False, 0.0, []
+        if len(shared_tags) >= _THEME_ALIGN_TAG_OVERLAP_MIN:
+            return True, 0.0, sorted(shared_tags)
+        return False, 0.0, sorted(shared_tags)
 
     deck_idx = tfidf.deck_idx.get(id(deck))
     if deck_idx is None:
-        return False, 0.0, []
+        return False, 0.0, sorted(shared_tags)
     deck_vec = tfidf.deck_vectors[deck_idx]
     cos = TfidfScorer._cosine(up_vec, deck_vec)
 
@@ -1140,19 +1315,27 @@ def _detect_alignment(
     # Strong upgrade terms = top 5 weighted features in its own vector.
     up_strong = sorted(up_vec.items(), key=lambda x: -x[1])[:5]
     up_strong_terms = {tfidf.idx_to_term[i] for i, _ in up_strong}
-    shared = sorted(up_strong_terms & deck_top)
+    shared_terms = up_strong_terms & deck_top
 
-    # Two ways to qualify as aligned:
-    #   1. Strong cosine alone (>= _THEME_ALIGN_COSINE_STRONG), OR
-    #   2. Moderate cosine (>= _THEME_ALIGN_COSINE_THRESHOLD) AND at least one
-    #      shared top-N term as confirmation.
     aligned = (
+        # 1) Strong cosine alone
         cos >= _THEME_ALIGN_COSINE_STRONG
+        # 2) Moderate cosine + shared top-term
         or (
             cos >= _THEME_ALIGN_COSINE_THRESHOLD
-            and len(shared) >= _THEME_ALIGN_TERM_OVERLAP_MIN
+            and len(shared_terms) >= _THEME_ALIGN_TERM_OVERLAP_MIN
         )
+        # 3) Low-floor cosine + at least one shared top-tag (semantic backstop)
+        or (
+            cos >= _THEME_ALIGN_COSINE_LOW
+            and len(shared_tags) >= 1
+        )
+        # 4) Two or more shared tags regardless of cosine (vanilla-friendly)
+        or len(shared_tags) >= _THEME_ALIGN_TAG_OVERLAP_MIN
     )
+    # Return both signal classes joined; tag slugs are prefixed with '#' so a
+    # reader can tell them apart from TF-IDF terms in the report.
+    shared = sorted(shared_terms) + sorted(f"#{t}" for t in shared_tags)
     return aligned, cos, shared
 
 
@@ -1163,19 +1346,46 @@ def _off_theme_score(
     deck_top_terms: set[str],
 ) -> tuple[float, dict]:
     """
-    Compute an "off-theme" score for a deck card in [0, 1.5] range.
+    Compute an "off-theme" score for a deck card.
 
-    Combines two signals:
-      1. (1 - card_cosine_to_deck) — outliers vs the deck profile
-      2. +0.5 if the card has NO overlap with the deck's top-N terms
+    Signals (in order of contribution):
+      1. (1 - cosine) — outlier vs the deck's TF-IDF profile
+      2. +0.5 if NO overlap with the deck's top-N TF-IDF terms
+      3. − 0.3 × min(shared_tags, 2) — tag protection: cards that hit the
+         deck's top tags are more likely to BE the theme; cutting them is
+         worse than cutting cards that don't.
+      4. +0.3 if NO overlap with the deck's top tags — tag confirmation
+         that the card really is off-theme.
+
+    Final clamped to [0.0, 2.0].
     """
+    # Tag profile: shared with deck's top tags.
+    deck_tags = deck_top_tags(deck)
+    oid = deck_card.get("oracle_id")
+    if not oid and deck_card.get("name"):
+        info = _lookup_bulk(deck_card["name"])
+        if info:
+            oid = info.get("oracle_id")
+    dc_tags = _meaningful_tags(card_tags(oid)) if oid else set()
+    shared_tags = dc_tags & deck_tags
+    tag_protection = 0.3 * min(len(shared_tags), 2)
+    tag_penalty = 0.3 if (deck_tags and not shared_tags) else 0.0
+
     dc_text = _clean_oracle(deck_card.get("oracle_text") or "")
     if not dc_text:
-        # No text — likely vanilla creature. Treat as moderately off-theme.
-        return 0.6, {"cosine": 0.0, "hits_top_term": False}
+        # No text — likely vanilla creature. Treat as moderately off-theme,
+        # but still apply tag protection so a vanilla beater in a creatures
+        # deck isn't trivially cut.
+        base = 0.6
+        off_theme = max(0.0, base - tag_protection + tag_penalty)
+        return off_theme, {"cosine": 0.0, "hits_top_term": False,
+                            "shared_tags": sorted(shared_tags)}
     dc_vec = tfidf._vectorize(dc_text)
     if not dc_vec:
-        return 0.6, {"cosine": 0.0, "hits_top_term": False}
+        base = 0.6
+        off_theme = max(0.0, base - tag_protection + tag_penalty)
+        return off_theme, {"cosine": 0.0, "hits_top_term": False,
+                            "shared_tags": sorted(shared_tags)}
 
     deck_idx = tfidf.deck_idx[id(deck)]
     deck_vec = tfidf.deck_vectors[deck_idx]
@@ -1187,8 +1397,13 @@ def _off_theme_score(
     }
     hits_top = bool(dc_strong_terms & deck_top_terms)
 
-    off_theme = (1.0 - cos) + (0.0 if hits_top else 0.5)
-    return off_theme, {"cosine": cos, "hits_top_term": hits_top}
+    off_theme = (1.0 - cos) + (0.0 if hits_top else 0.5) - tag_protection + tag_penalty
+    off_theme = max(0.0, min(2.0, off_theme))
+    return off_theme, {
+        "cosine": cos,
+        "hits_top_term": hits_top,
+        "shared_tags": sorted(shared_tags),
+    }
 
 
 def find_replacements(
