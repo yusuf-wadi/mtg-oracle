@@ -37,6 +37,7 @@ import gzip
 import hashlib
 import json
 import re
+import signal
 import sys
 import time
 from pathlib import Path
@@ -230,7 +231,28 @@ def save_progress(progress: dict) -> None:
     tmp.replace(PROGRESS_PATH)
 
 
+# Module-level handles for the signal handler to checkpoint on SIGTERM.
+_RUN_STATE: dict = {"tags_meta": None, "done": None, "oracle_to_tags": None}
+
+
+def _on_sigterm(signum, frame):
+    print(f"\nReceived signal {signum}, saving checkpoint before exit...",
+          file=sys.stderr)
+    if _RUN_STATE["tags_meta"] is not None:
+        try:
+            save_progress({"tags": _RUN_STATE["tags_meta"],
+                           "done": [{"slug": s} for s in _RUN_STATE["done"]],
+                           "oracle_to_tags": _RUN_STATE["oracle_to_tags"]})
+            print(f"  saved {len(_RUN_STATE['done'])} tags", file=sys.stderr)
+        except Exception as e:
+            print(f"  checkpoint save failed: {e}", file=sys.stderr)
+    sys.exit(143 if signum == signal.SIGTERM else 130)
+
+
 def main() -> int:
+    signal.signal(signal.SIGTERM, _on_sigterm)
+    signal.signal(signal.SIGINT, _on_sigterm)
+
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--resume", action="store_true",
@@ -269,6 +291,11 @@ def main() -> int:
         tags_meta = [t for t in tags_meta if t["slug"] in keep]
         print(f"  --tag-limit: keeping top {len(tags_meta)} tags",
               file=sys.stderr)
+
+    # Expose state to the SIGTERM handler.
+    _RUN_STATE["tags_meta"] = tags_meta
+    _RUN_STATE["done"] = done
+    _RUN_STATE["oracle_to_tags"] = oracle_to_tags
 
     print(f"Step 2/2: fetching taggings for {len(tags_meta)} tags "
           f"({sum(t['taggingCount'] for t in tags_meta):,} edges)...",

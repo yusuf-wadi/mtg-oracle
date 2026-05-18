@@ -34,8 +34,43 @@ jobs:
         with:
           python-version: "3.11"
 
+      - name: Restore progress checkpoint from prior runs
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Look for the most recent successful upload of oracle-tags-progress
+          # from any prior workflow run.
+          latest=$(gh api "repos/${{ github.repository }}/actions/artifacts?per_page=100" \
+            --jq '[.artifacts[] | select(.name=="oracle-tags-progress" and .expired==false)] | sort_by(.created_at) | reverse | .[0].id // empty')
+          if [ -n "$latest" ]; then
+            echo "Found prior progress artifact $latest, downloading..."
+            mkdir -p data
+            gh api "repos/${{ github.repository }}/actions/artifacts/$latest/zip" > /tmp/progress.zip
+            unzip -o /tmp/progress.zip -d data/ || true
+            ls -la data/_oracle-tags-progress.json || echo "no progress file in artifact"
+          else
+            echo "No prior progress artifact found, starting fresh."
+          fi
+
       - name: Run refresh script
-        run: python scripts/refresh_oracle_tags.py
+        run: |
+          if [ -f data/_oracle-tags-progress.json ]; then
+            echo "Resuming from checkpoint..."
+            python scripts/refresh_oracle_tags.py --resume
+          else
+            python scripts/refresh_oracle_tags.py
+          fi
+
+      - name: Upload progress checkpoint (always, for resume)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: oracle-tags-progress
+          path: data/_oracle-tags-progress.json
+          if-no-files-found: ignore
+          retention-days: 7
+          overwrite: true
 
       - name: Commit and push if changed
         run: |
