@@ -302,6 +302,7 @@ function renderRadar(data) {
       options: {
         responsive: true,
         maintainAspectRatio: true,
+        aspectRatio: 1,
         layout: { padding: 28 },
         onClick: (evt, els) => {
           if (!els.length) return;
