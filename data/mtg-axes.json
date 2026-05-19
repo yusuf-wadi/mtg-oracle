@@ -1,0 +1,183 @@
+{
+  "_meta": {
+    "version": "v1",
+    "description": "MTG rules-vocabulary primitives. Each primitive defines one axis of the semantic embedding space. The 'seed' field is what gets embedded — it should read like rules text, not a strategy description. A card's coordinates in the space are its cosine to each axis embedding.",
+    "trim_criteria": [
+      "REMOVE axes every deck has by default (lands, basic card types, mana cost, color identity) — they are floor-of-game and add noise, not differentiation.",
+      "KEEP axes decks are actively built around (graveyard, attack-trigger, sacrifice, +1/+1 counters, tokens, ramp).",
+      "KEEP granular trigger windows (etb, dies, attacks, blocks, cast, upkeep, end-step) — they are mechanically distinct.",
+      "KEEP evergreen keyword abilities with their reminder-text style seed.",
+      "Seeds reference Comprehensive Rules and magic.wizards.com/en/keyword-glossary wording where possible."
+    ],
+    "sources": [
+      "https://magic.wizards.com/en/rules",
+      "https://magic.wizards.com/en/keyword-glossary",
+      "https://mtg.fandom.com/wiki/Evergreen",
+      "https://mtg.fandom.com/wiki/Triggered_ability",
+      "https://mtg.fandom.com/wiki/Activated_ability"
+    ],
+    "removed_from_draft": {
+      "land": "every deck plays lands; color identity already covers legality",
+      "creature": "every deck plays creatures of some count; not a build-around axis on its own",
+      "instant": "presence of instants is universal at any density above zero; specific instants matter, not the type",
+      "sorcery": "same reasoning as instant",
+      "artifact": "too broad on its own; specific artifact subtypes (equipment, vehicle, treasure) carry the signal",
+      "enchantment": "too broad; aura subtype carries the signal where it matters",
+      "planeswalker": "merged into loyalty_counter axis which is the actual mechanic",
+      "basic_land": "every deck runs basics; not a build-around",
+      "cast_spell": "casting is the default action of the game",
+      "mana_cost": "every card has one",
+      "tap_cost": "tap symbol is too common to be a signal",
+      "produce_mana": "every land does this; mana_ability stays for the activated-ability-on-stack distinction",
+      "color_white/blue/black/red/green/colorless/multicolor": "color identity is already used for legality filtering; color is not a theme axis"
+    },
+    "added_in_v1": [
+      "landfall", "cycling", "kicker", "flashback", "cascade", "prowess",
+      "convoke", "delve", "dredge", "storm", "devotion", "morph",
+      "modal_dfc", "saga", "adventure", "food", "clue", "blood",
+      "energy", "experience_counter", "monarch", "initiative",
+      "commander_cast", "partner", "companion", "venture_dungeon"
+    ]
+  },
+
+  "zones": [
+    { "id": "graveyard",     "seed": "a player's graveyard is the discard pile for destroyed creatures, used instants and sorceries, sacrificed permanents, and discarded cards. cards in the graveyard can be returned, exiled, or referenced by abilities. graveyard-matters strategies use the graveyard as a resource." },
+    { "id": "library",       "seed": "a player's library is their deck of cards face down, drawn from at the start of each turn and searched by tutor effects. running out of cards in library causes that player to lose the game the next time they would draw." },
+    { "id": "hand",          "seed": "the hand is the zone of cards held by a player, hidden from opponents, drawn into and discarded from. maximum hand size is enforced at the cleanup step. cards in hand can be cast or discarded." },
+    { "id": "exile",         "seed": "the exile zone holds cards removed from the game. exiled cards generally cannot be returned unless an effect specifically allows it. exile is harder to recover from than graveyard and is used as permanent removal." },
+    { "id": "stack",         "seed": "the stack is where spells and abilities wait to resolve. spells are cast onto the stack, abilities trigger or are activated onto the stack, and they resolve in last-in-first-out order. mana abilities and special actions do not use the stack." },
+    { "id": "command",       "seed": "the command zone holds commanders, emblems, and certain other game objects. a commander can be cast from the command zone for an additional two mana each time after the first, called the commander tax." }
+  ],
+
+  "subtypes_qualifiers": [
+    { "id": "legendary",     "seed": "legendary is a supertype. a player cannot control two legendary permanents with the same name; the legend rule forces one to be put into the graveyard. commanders are always legendary." },
+    { "id": "equipment",     "seed": "equipment is an artifact subtype that can be attached to a creature you control by paying its equip cost. equipment grants the equipped creature abilities and stays on the battlefield when the equipped creature dies." },
+    { "id": "aura",          "seed": "aura is an enchantment subtype that enters the battlefield attached to a permanent specified by its enchant ability. an aura is put into its owner's graveyard if what it enchants leaves the battlefield." },
+    { "id": "vehicle",       "seed": "vehicle is an artifact subtype with power and toughness. a vehicle becomes an artifact creature until end of turn when its crew ability is activated by tapping creatures with total power equal to or greater than its crew cost." },
+    { "id": "tribal_creature","seed": "a creature subtype, also known as a creature type, such as elf, goblin, dragon, zombie, human, merfolk, or wizard. tribal strategies build around cards that care about creatures sharing a creature type." },
+    { "id": "snow",          "seed": "snow is a supertype on lands and other permanents. mana produced by snow sources is called snow mana and can pay for costs that require snow mana, denoted by the snow symbol." }
+  ],
+
+  "casting_and_costs": [
+    { "id": "additional_cost",   "seed": "an additional cost is a cost that must be paid in addition to a spell's mana cost. examples include discarding a card, sacrificing a creature, tapping a permanent, or paying life." },
+    { "id": "alternative_cost",  "seed": "an alternative cost replaces a spell's normal mana cost. examples include flashback, evoke, madness, emerge, and foretell. a player chooses to use the alternative cost when casting." },
+    { "id": "x_cost",            "seed": "a variable cost denoted by x lets the caster choose any value for x when casting, paying that much mana, with the spell's effect scaling with the chosen value of x." },
+    { "id": "life_payment",      "seed": "a player may pay life as a cost or have life lost as an effect. paying life reduces the player's life total but is not damage and does not cause loss-of-life triggers from damage." },
+    { "id": "mana_ability",      "seed": "a mana ability is an activated or triggered ability that produces mana and does not target. mana abilities resolve immediately without using the stack and cannot be responded to." },
+    { "id": "kicker",            "seed": "kicker is a keyword ability. a spell with kicker can be cast for an additional cost; if the kicker cost was paid, the spell gains additional effects specified by the card." },
+    { "id": "flashback",         "seed": "flashback is a keyword ability that lets a player cast a card from their graveyard for its flashback cost. a spell cast with flashback is exiled instead of going back to the graveyard." },
+    { "id": "cascade",           "seed": "cascade is a triggered ability. when a player casts a spell with cascade, they exile cards from the top of their library until they exile a nonland card with lesser mana value, which they may cast for free." },
+    { "id": "convoke",           "seed": "convoke is a keyword ability that lets a player tap untapped creatures they control to pay for a spell. each creature tapped this way pays for one mana of any color shared with the creature's color, or one generic mana." },
+    { "id": "delve",             "seed": "delve is a keyword ability that lets a player exile cards from their graveyard to pay for a spell. each card exiled this way pays for one generic mana of the spell's cost." },
+    { "id": "cycling",           "seed": "cycling is an activated ability. a player may pay the cycling cost and discard the card from their hand to draw a card. cycling effects can be triggered by the act of cycling itself." }
+  ],
+
+  "actions_offense": [
+    { "id": "attack",            "seed": "to attack, a creature is declared as an attacker by its controller during the declare attackers step of their combat phase. attacking creatures tap unless they have vigilance and deal combat damage to the player or planeswalker they attack." },
+    { "id": "block",             "seed": "to block, an untapped creature is declared as a blocker against an attacking creature during the declare blockers step. blocking creatures deal and receive combat damage in the combat damage step." },
+    { "id": "combat_damage",     "seed": "combat damage is dealt by attacking and blocking creatures during the combat damage step. damage equal to a creature's power is dealt to the creature, player, or planeswalker it is fighting." },
+    { "id": "deal_damage",       "seed": "to deal damage to a creature, planeswalker, or player as an effect of a spell or ability rather than as combat damage. damage is marked on creatures and reduces life totals or loyalty until the end of the turn." },
+    { "id": "first_strike",      "seed": "first strike is a keyword ability that lets a creature deal its combat damage before creatures without first strike. this creates an extra combat damage step before the normal one." },
+    { "id": "double_strike",     "seed": "double strike is a keyword ability that lets a creature deal both first-strike and regular combat damage. double-strike creatures deal twice their power in damage per combat if they survive the first-strike step." },
+    { "id": "trample",           "seed": "trample is a keyword ability that lets an attacking creature assign excess combat damage to the defending player or planeswalker after assigning lethal damage to its blockers." },
+    { "id": "menace",            "seed": "menace is a keyword ability. a creature with menace cannot be blocked except by two or more creatures. menace is an evasion ability." },
+    { "id": "flying",            "seed": "flying is a keyword ability. a creature with flying cannot be blocked except by creatures with flying or reach. flying is the most common evasion ability." },
+    { "id": "reach",             "seed": "reach is a keyword ability. a creature with reach can block creatures with flying. reach does not grant flying itself." },
+    { "id": "haste",             "seed": "haste is a keyword ability that lets a creature attack and use tap abilities the turn it comes under its controller's control, bypassing summoning sickness." },
+    { "id": "vigilance",         "seed": "vigilance is a keyword ability. an attacking creature with vigilance does not tap as a result of attacking, allowing it to block on the following turn." },
+    { "id": "deathtouch",        "seed": "deathtouch is a keyword ability. any amount of damage dealt by a source with deathtouch to a creature is enough to destroy that creature. deathtouch combines with trample to spread minimal damage." },
+    { "id": "lifelink",          "seed": "lifelink is a keyword ability. damage dealt by a source with lifelink causes its controller to gain that much life. lifelink works both in and outside of combat and applies to noncombat damage too." },
+    { "id": "indestructible",    "seed": "indestructible is a keyword ability. permanents with indestructible are not destroyed by damage or by effects that say destroy. they can still be exiled, sacrificed, or have toughness reduced to zero." },
+    { "id": "hexproof",          "seed": "hexproof is a keyword ability. a permanent or player with hexproof cannot be the target of spells or abilities controlled by opponents. hexproof does not protect against untargeted effects." },
+    { "id": "shroud",            "seed": "shroud is a keyword ability. a permanent or player with shroud cannot be the target of any spells or abilities, including those controlled by its own controller." },
+    { "id": "ward",              "seed": "ward is a triggered ability. whenever a permanent with ward becomes the target of a spell or ability an opponent controls, that spell or ability is countered unless its controller pays the ward cost." },
+    { "id": "protection",        "seed": "protection from a quality means a permanent cannot be blocked by, targeted by, dealt damage by, or enchanted or equipped by sources of that quality. protection is one of the strongest defensive keywords." },
+    { "id": "extra_combat",      "seed": "to take an additional combat phase after this one. abilities that grant extra combat phases let a player attack multiple times in a turn, repeating combat damage and attack triggers." },
+    { "id": "prowess",           "seed": "prowess is a triggered ability. whenever its controller casts a noncreature spell, the creature with prowess gets plus one slash plus one until end of turn. prowess rewards spell-heavy strategies." },
+    { "id": "landfall",          "seed": "landfall is a triggered ability. whenever a land enters the battlefield under its controller's control, the landfall ability triggers. landfall rewards playing extra lands per turn through ramp or fetches." }
+  ],
+
+  "actions_disruption": [
+    { "id": "destroy",           "seed": "to destroy a permanent, putting it into its owner's graveyard from the battlefield. destruction can be prevented by indestructible or regeneration. lethal damage is also a form of destruction." },
+    { "id": "exile_action",      "seed": "to exile a permanent, spell, or card by moving it from its current zone to the exile zone. exile is more permanent than destruction since recursion from exile is rare and bypasses indestructible." },
+    { "id": "counter_spell",     "seed": "to counter a spell, removing it from the stack and putting it into its owner's graveyard without it resolving. countered spells do not have any of their effects and cannot be cast again from the graveyard unless flashback or similar applies." },
+    { "id": "bounce",            "seed": "to return a permanent from the battlefield to its owner's hand. bouncing is non-permanent removal but bypasses indestructible and can reset enters-the-battlefield triggers when the card is recast." },
+    { "id": "discard",           "seed": "to discard a card from a player's hand into their graveyard. discard can be a cost paid by the controller, an effect imposed on opponents, or a trigger to fuel madness and graveyard strategies." },
+    { "id": "mill",              "seed": "to mill cards by putting them from the top of a library directly into its owner's graveyard. milling is a way to deplete an opponent's library or fuel one's own graveyard for reanimation and delve." },
+    { "id": "sacrifice",         "seed": "to sacrifice a permanent, moving it from the battlefield to its owner's graveyard as a cost or effect. sacrifice bypasses indestructible, cannot be prevented, and triggers leaves-the-battlefield and dies abilities." },
+    { "id": "damage_prevention", "seed": "to prevent damage that would be dealt. prevention effects are replacement effects that replace damage with no damage or with a different amount, depending on the wording. fog effects prevent all combat damage." },
+    { "id": "tap_opponent",      "seed": "to tap a permanent an opponent controls, preventing it from being used. tap effects can lock down attackers, blockers, or mana sources, especially against untapped permanents during opponents' turns." },
+    { "id": "goad",              "seed": "to goad a creature. until your next turn, a goaded creature attacks each combat if able and attacks a player other than you if able. goad is a multiplayer-political mechanic that forces combat onto opponents." }
+  ],
+
+  "actions_advantage": [
+    { "id": "draw_card",         "seed": "to draw a card from the top of a library into a player's hand. drawing extra cards is one of the most valuable resources in magic, and many decks build around repeatable card draw." },
+    { "id": "tutor",             "seed": "to search a library for a specific card or type of card and put it into a hand, onto the battlefield, or into another zone. the library is then shuffled if it was searched. tutors enable combo and toolbox strategies." },
+    { "id": "scry",              "seed": "to scry by looking at the top cards of a library, then putting any number of them on the bottom and the rest back on top in any order. scry filters future draws but does not draw cards by itself." },
+    { "id": "surveil",           "seed": "to surveil by looking at the top cards of a library, then putting any number of them into the graveyard and the rest back on top in any order. surveil filters and feeds the graveyard simultaneously." },
+    { "id": "return_to_hand",    "seed": "to return a card from the graveyard, battlefield, or exile to its owner's hand. returning recovers resources and can reset enters-the-battlefield triggers when the card is recast." },
+    { "id": "return_to_battlefield","seed": "to return a card from the graveyard or exile to the battlefield, also known as reanimation. this is a primary form of resource recovery in graveyard-based strategies and combos with self-mill or sacrifice outlets." },
+    { "id": "ramp",              "seed": "to accelerate a player's mana production beyond the one-land-per-turn rule by putting additional lands onto the battlefield or creating mana-producing artifacts and creatures. ramp enables casting larger spells earlier." },
+    { "id": "treasure",          "seed": "a treasure is an artifact token with the activated ability to tap and sacrifice to add one mana of any color. treasures are temporary, single-use mana that can also fuel artifact-matters and sacrifice strategies." },
+    { "id": "dredge",            "seed": "dredge is a replacement effect. if a player would draw a card while a card with dredge is in their graveyard, they may instead mill cards equal to the dredge number and return the dredge card to hand." },
+    { "id": "storm",             "seed": "storm is a triggered ability. when a player casts a spell with storm, they copy it for each other spell cast before it this turn. storm rewards casting many spells in a single turn." }
+  ],
+
+  "triggers_state": [
+    { "id": "enters_battlefield","seed": "an enters-the-battlefield trigger, often called etb, is a triggered ability that triggers when a permanent enters the battlefield from any zone. etb effects are a primary value engine in blink and reanimator strategies." },
+    { "id": "leaves_battlefield","seed": "a leaves-the-battlefield trigger is a triggered ability that triggers when a permanent leaves the battlefield, regardless of where it ends up. leaves-the-battlefield triggers are distinct from dies triggers because they also fire on exile, bounce, and library returns." },
+    { "id": "dies",              "seed": "to die means a creature is put from the battlefield into a graveyard. dies triggers fire when a creature transitions from the battlefield to the graveyard but not when it is exiled or returned to hand." },
+    { "id": "attacks_trigger",   "seed": "an attack trigger is a triggered ability that triggers when a creature attacks or whenever any creature attacks. it triggers at the declare attackers step and is rewarded by extra combat phases." },
+    { "id": "blocks_trigger",    "seed": "a blocks trigger is a triggered ability that triggers when a creature blocks or becomes blocked. it triggers at the declare blockers step and rewards defensive board states." },
+    { "id": "cast_trigger",      "seed": "a cast trigger is a triggered ability that triggers when its controller or any player casts a spell, typically of a particular type. cast triggers fire on the stack and resolve before the spell that caused them." },
+    { "id": "upkeep_trigger",    "seed": "an upkeep trigger is a triggered ability that triggers at the beginning of a player's upkeep step, before the draw step. upkeep is the second step of the beginning phase." },
+    { "id": "end_step_trigger",  "seed": "an end step trigger is a triggered ability that triggers at the beginning of the end step, after main phase two. end-step effects often grant value at the end of opponents' turns when controlled by a flash deck." },
+    { "id": "control_change",    "seed": "to change control of a permanent, transferring it from one player to another. control change can be temporary, lasting until end of turn, or permanent depending on the effect, and can target creatures, artifacts, or lands." }
+  ],
+
+  "counters_and_modifications": [
+    { "id": "plus_one_counter",  "seed": "a plus one plus one counter is placed on a creature to increase its power and toughness by one each. plus one plus one counters accumulate and persist until the creature leaves the battlefield, and are referenced by many abilities." },
+    { "id": "minus_one_counter", "seed": "a minus one minus one counter is placed on a creature to decrease its power and toughness by one each. minus one minus one counters can destroy creatures by reducing toughness to zero and pair with plus one counters via state-based actions." },
+    { "id": "loyalty_counter",   "seed": "a loyalty counter is placed on a planeswalker to track its loyalty value. activating a loyalty ability adds or removes loyalty counters; a planeswalker with zero loyalty is put into its owner's graveyard." },
+    { "id": "charge_counter",    "seed": "a charge counter is placed on an artifact or other permanent to track stored uses. charge counters are referenced by the card itself and have no inherent rules meaning beyond what the card states." },
+    { "id": "experience_counter","seed": "an experience counter is placed on a player by certain commanders. experience counters accumulate and are referenced by the commander's other abilities to scale with the game's progression." },
+    { "id": "energy",            "seed": "energy is a resource tracked on a player using energy counters. cards that produce energy add energy counters; cards that spend energy require paying a number of energy counters as a cost." },
+    { "id": "proliferate",       "seed": "to proliferate by choosing any number of permanents and players with counters, and giving each another counter of a kind already there. proliferate scales with the variety of counters in play." },
+    { "id": "power_toughness_buff","seed": "to grant a creature an increase to its power, toughness, or both, often as a static or temporary bonus expressed as plus n slash plus n. anthem effects grant permanent bonuses to many creatures." }
+  ],
+
+  "tokens_and_creation": [
+    { "id": "create_token",      "seed": "to create a token by putting a token permanent onto the battlefield under a player's control. tokens are defined by the effect that creates them and cease to exist when they leave the battlefield." },
+    { "id": "copy_spell",        "seed": "to copy a spell or permanent. a copy of a spell has the same characteristics as the original and resolves separately. copies of permanents enter the battlefield as tokens." },
+    { "id": "food",              "seed": "a food is an artifact token with the activated ability to pay two generic mana, tap, and sacrifice to gain three life. foods support lifegain and sacrifice strategies." },
+    { "id": "clue",              "seed": "a clue is an artifact token with the activated ability to pay two generic mana and sacrifice to draw a card. clues are deferred card draw and pair with artifact-sacrifice strategies." },
+    { "id": "blood",             "seed": "a blood is an artifact token with the activated ability to pay one generic mana, tap, sacrifice, and discard a card to draw a card. bloods enable looting and feed madness or graveyard strategies." }
+  ],
+
+  "static_keywords": [
+    { "id": "flash",             "seed": "flash is a keyword ability that lets a player cast a spell any time they could cast an instant. flash spells can be played in response to opponents' actions or at the end of an opponent's turn." },
+    { "id": "defender",          "seed": "defender is a keyword ability. a creature with defender cannot attack. defenders are typically used as blockers and rarely interact with attack triggers, though some decks build around defender creatures." },
+    { "id": "phasing",           "seed": "phasing is a keyword ability that causes a permanent to phase out at the beginning of its controller's untap step, becoming treated as if it does not exist until it phases in at its controller's next untap step." },
+    { "id": "morph",             "seed": "morph is a keyword ability that lets a player cast a card face-down as a two-mana two-two creature, then turn it face-up by paying its morph cost. morph hides identity until revealed." },
+    { "id": "modal_dfc",         "seed": "a modal double-faced card has two faces that can each be cast independently. one face is often a land and the other a spell, giving the card flexibility in deckbuilding." },
+    { "id": "saga",              "seed": "a saga is an enchantment subtype with chapter abilities. a saga enters with a lore counter, gains another at each precombat main phase, and triggers chapter abilities at each new lore counter, then is sacrificed after the final chapter." },
+    { "id": "adventure",         "seed": "adventure is a card subtype on the left half of a split creature card. the adventure half can be cast as an instant or sorcery; if it resolves, the card is exiled and can later be cast as a creature from exile." },
+    { "id": "transform",         "seed": "to transform a double-faced card by turning it over to its other face. transforming changes a card's characteristics to those of its back face, which usually represents an upgraded form." }
+  ],
+
+  "commander_specific": [
+    { "id": "commander_cast",    "seed": "to cast a commander from the command zone. each time after the first, an additional two generic mana must be paid, called the commander tax. commander cast triggers reward repeatedly recasting the commander." },
+    { "id": "partner",           "seed": "partner is a keyword ability. a player may have two commanders if both have partner. partner with names a specific other commander as a permitted partner pair." },
+    { "id": "monarch",           "seed": "the monarch is a designation a player holds. at the beginning of the monarch's end step, the monarch draws a card. dealing combat damage to the monarch makes that player the new monarch." },
+    { "id": "initiative",        "seed": "the initiative is a designation a player holds, granting venturing into the undercity at the beginning of their upkeep. dealing combat damage to the player with the initiative takes the initiative." },
+    { "id": "venture_dungeon",   "seed": "to venture into the dungeon by entering a dungeon if the player is not currently in one, or advancing one room deeper if they are. completing a dungeon grants its final reward." }
+  ],
+
+  "broader_concepts": [
+    { "id": "target_any",        "seed": "to target a player, permanent, spell, or ability when casting a spell or activating an ability. targets are chosen on announcement and re-checked on resolution. targeted things with hexproof, shroud, or protection from the source cannot be targeted." },
+    { "id": "untargeted",        "seed": "an effect that affects all of something, or each of something, without choosing a target. untargeted effects bypass hexproof, shroud, and ward and apply to objects that would not be legal targets." },
+    { "id": "may_choice",        "seed": "an optional effect denoted by the word may. the player chooses whether to perform the effect at the time of resolution, allowing flexibility in execution." },
+    { "id": "replacement_effect","seed": "a replacement effect modifies an event before it happens, often using the words instead, would, or as. replacement effects do not use the stack and cannot be responded to." },
+    { "id": "devotion",          "seed": "devotion to a color is the number of mana symbols of that color among the mana costs of permanents a player controls. devotion-matters effects scale with the saturation of a color on the battlefield." }
+  ]
+}
