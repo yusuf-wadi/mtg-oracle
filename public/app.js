@@ -319,8 +319,7 @@ function renderRadar(data) {
       },
       options: {
         responsive: true,
-        maintainAspectRatio: true,
-        aspectRatio: 1,
+        maintainAspectRatio: false,
         layout: { padding: 28 },
         onClick: (evt, els) => {
           if (!els.length) return;
@@ -398,7 +397,7 @@ function renderRadar(data) {
         },
         options: {
           responsive: true,
-          maintainAspectRatio: true,
+          maintainAspectRatio: false,
           plugins: {
             legend: { display: false },
             tooltip: { callbacks: { label: (c) => `${c.label}: ${c.formattedValue}` } },
