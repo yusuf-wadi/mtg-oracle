@@ -123,46 +123,79 @@ function renderUpgrades(data) {
   $("result_upgrades").hidden = false;
 }
 
+const TOP_AXES_COUNT = 8;
+
 function renderRadar(data) {
   const meta = $("meta_radar");
   const panels = $("radar_panels");
   panels.innerHTML = "";
   meta.innerHTML =
     `<span><b>${data.decks.length}</b> decks</span>` +
-    `<span>axes <b>${data.axes_total}</b></span>` +
-    `<span>families <b>${data.families.length}</b></span>` +
+    `<span>top <b>${TOP_AXES_COUNT}</b> axes shown</span>` +
+    `<span>${data.axes_total} total · ${data.families.length} families</span>` +
     `<span><b>${data.elapsed_sec}s</b></span>`;
 
+  // Build a quick lookup from axis_id -> family object
+  const axisToFamily = {};
+  data.families.forEach((f) => {
+    f.axes.forEach((a) => { axisToFamily[a.id] = f; });
+  });
+
   data.decks.forEach((d, idx) => {
+    // Pick the deck's top N axes across the whole 105
+    const ranked = Object.entries(d.axis_scores)
+      .filter(([, v]) => v > 0)
+      .sort((a, b) => b[1] - a[1]);
+    const topAxes = ranked.slice(0, TOP_AXES_COUNT);
+    const topSum = topAxes.reduce((s, [, v]) => s + v, 0);
+    const totalSum = ranked.reduce((s, [, v]) => s + v, 0);
+    const concentration = totalSum > 0 ? Math.round((topSum / totalSum) * 100) : 0;
+
     const wrap = document.createElement("div");
     wrap.className = "deck-panel";
     wrap.innerHTML = `
-      <h3>${escapeHtml(d.name)} <small class="hint">${d.cards} cards · ${d.color_identity || "C"}</small></h3>
+      <h3>${escapeHtml(d.name)} <small class="hint">${d.cards} cards · ${d.color_identity || "C"} · ${concentration}% of signal in top ${topAxes.length}</small></h3>
       <div class="radar-grid">
-        <div class="radar-cell"><canvas id="radar_${idx}_family"></canvas></div>
+        <div class="radar-cell">
+          <div class="radar-cell-hint">Dominant themes · click an axis to see its family</div>
+          <canvas id="radar_${idx}_top"></canvas>
+        </div>
         <div class="radar-cell" id="radar_${idx}_drill_wrap" hidden>
           <h4 id="radar_${idx}_drill_title"></h4>
+          <div class="radar-cell-hint" id="radar_${idx}_drill_hint"></div>
           <canvas id="radar_${idx}_drill"></canvas>
         </div>
       </div>
     `;
     panels.appendChild(wrap);
 
-    const labels = data.families.map((f) => f.label);
-    const values = data.families.map((f) => d.family_scores[f.id] || 0);
+    if (topAxes.length === 0) {
+      const canvas = $(`radar_${idx}_top`);
+      const ctx = canvas.getContext("2d");
+      ctx.fillStyle = "#6c7585";
+      ctx.font = "14px ui-sans-serif, system-ui, sans-serif";
+      ctx.textAlign = "center";
+      ctx.fillText("No axes matched — deck oracle text may be empty.", canvas.width / 2, 40);
+      return;
+    }
+
+    const labels = topAxes.map(([axisId]) => prettyAxis(axisId));
+    const values = topAxes.map(([, v]) => v);
     const maxVal = Math.max(1, ...values);
-    const familyChart = new Chart($(`radar_${idx}_family`), {
+
+    new Chart($(`radar_${idx}_top`), {
       type: "radar",
       data: {
         labels,
         datasets: [{
           label: d.name,
           data: values,
-          backgroundColor: "rgba(124, 92, 255, 0.18)",
+          backgroundColor: "rgba(124, 92, 255, 0.22)",
           borderColor: "#7c5cff",
           pointBackgroundColor: "#7c5cff",
-          pointRadius: 4,
-          pointHoverRadius: 6,
+          pointRadius: 5,
+          pointHoverRadius: 7,
+          borderWidth: 2,
         }],
       },
       options: {
@@ -171,33 +204,53 @@ function renderRadar(data) {
         onClick: (evt, els) => {
           if (!els.length) return;
           const ix = els[0].index;
-          showDrill(idx, data.families[ix], d.axis_scores);
+          const axisId = topAxes[ix][0];
+          const family = axisToFamily[axisId];
+          if (family) showDrill(idx, family, d.axis_scores, axisId);
         },
         plugins: {
-          legend: { labels: { color: "#e6e9ef" } },
-          tooltip: { callbacks: { label: (c) => `${c.label}: ${c.formattedValue}` } },
+          legend: { display: false },
+          tooltip: {
+            callbacks: {
+              label: (c) => `${c.label}: ${c.formattedValue}`,
+              afterLabel: (c) => {
+                const axisId = topAxes[c.dataIndex][0];
+                const family = axisToFamily[axisId];
+                return family ? `family: ${family.label}` : "";
+              },
+            },
+          },
         },
         scales: {
           r: {
             angleLines: { color: "#262b3a" },
             grid: { color: "#262b3a" },
-            pointLabels: { color: "#9aa3b2", font: { size: 11 } },
+            pointLabels: { color: "#e6e9ef", font: { size: 12, weight: "500" } },
             ticks: { color: "#6c7585", backdropColor: "transparent", maxTicksLimit: 4 },
             suggestedMin: 0,
-            suggestedMax: Math.max(maxVal, 1),
+            suggestedMax: maxVal,
           },
         },
       },
     });
 
-    function showDrill(panelIdx, family, axisScores) {
+    function showDrill(panelIdx, family, axisScores, clickedAxisId) {
       const drillWrap = $(`radar_${panelIdx}_drill_wrap`);
       const drillTitle = $(`radar_${panelIdx}_drill_title`);
+      const drillHint = $(`radar_${panelIdx}_drill_hint`);
       const drillCanvas = $(`radar_${panelIdx}_drill`);
-      drillTitle.textContent = `${family.label} — ${family.axes.length} axes`;
-      const dLabels = family.axes.map((a) => a.id);
+      drillTitle.textContent = family.label;
+      drillHint.textContent = `${family.axes.length} axes in this family · low-scoring axes dimmed`;
+
+      const dLabels = family.axes.map((a) => prettyAxis(a.id));
       const dValues = family.axes.map((a) => axisScores[a.id] || 0);
       const dMax = Math.max(1, ...dValues);
+      // Highlight the clicked axis with brighter color and bigger point
+      const pointColors = family.axes.map((a) => a.id === clickedAxisId ? "#7c5cff" : "#4ad6c0");
+      const pointSizes = family.axes.map((a) => a.id === clickedAxisId ? 7 : 4);
+      // Dim labels for axes that scored 0
+      const labelColors = family.axes.map((a) => (axisScores[a.id] || 0) > 0 ? "#e6e9ef" : "#5a6378");
+
       if (drillCanvas._chart) drillCanvas._chart.destroy();
       drillCanvas._chart = new Chart(drillCanvas, {
         type: "radar",
@@ -208,19 +261,27 @@ function renderRadar(data) {
             data: dValues,
             backgroundColor: "rgba(74, 214, 192, 0.18)",
             borderColor: "#4ad6c0",
-            pointBackgroundColor: "#4ad6c0",
-            pointRadius: 4,
+            pointBackgroundColor: pointColors,
+            pointRadius: pointSizes,
+            pointHoverRadius: pointSizes.map((s) => s + 2),
+            borderWidth: 2,
           }],
         },
         options: {
           responsive: true,
           maintainAspectRatio: true,
-          plugins: { legend: { labels: { color: "#e6e9ef" } } },
+          plugins: {
+            legend: { display: false },
+            tooltip: { callbacks: { label: (c) => `${c.label}: ${c.formattedValue}` } },
+          },
           scales: {
             r: {
               angleLines: { color: "#262b3a" },
               grid: { color: "#262b3a" },
-              pointLabels: { color: "#9aa3b2", font: { size: 10 } },
+              pointLabels: {
+                color: labelColors,
+                font: { size: 11 },
+              },
               ticks: { color: "#6c7585", backdropColor: "transparent", maxTicksLimit: 4 },
               suggestedMin: 0,
               suggestedMax: dMax,
@@ -229,10 +290,16 @@ function renderRadar(data) {
         },
       });
       drillWrap.hidden = false;
+      drillWrap.scrollIntoView({ behavior: "smooth", block: "nearest" });
     }
   });
 
   $("result_radar").hidden = false;
+}
+
+// Render axis IDs as readable labels: "attacks_trigger" -> "attacks trigger"
+function prettyAxis(id) {
+  return id.replace(/_/g, " ");
 }
 
 function renderPlayability(data) {
