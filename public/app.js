@@ -423,7 +423,7 @@ function renderRadar(data) {
   const familyCount = data.families.length;
   meta.innerHTML =
     `<span><b>${data.decks.length}</b> decks</span>` +
-    `<span>top axis per family</span>` +
+    `<span>top child axis per family</span>` +
     `<span>${data.axes_total} axes · ${familyCount} families</span>` +
     `<span><b>${data.elapsed_sec}s</b></span>`;
 
@@ -450,7 +450,7 @@ function renderRadar(data) {
       <h3>${escapeHtml(d.name)} <small class="hint">${d.cards} cards · ${d.color_identity || "C"} · ${activeReps.length}/${familyCount} families active · ${concentration}% of signal in top axes</small></h3>
       <div class="radar-grid" id="radar_${idx}_grid">
         <div class="radar-cell radar-headline">
-          <div class="radar-cell-hint">Top axis per family · click a point to drill into that family</div>
+          <div class="radar-cell-hint">Top child axis per family · click a point to drill into that family</div>
           <canvas id="radar_${idx}_top"></canvas>
         </div>
         <div class="radar-cell" id="radar_${idx}_drill_wrap" hidden>
@@ -472,10 +472,15 @@ function renderRadar(data) {
       return;
     }
 
-    // Plot all 12 families always; dim labels for zero-score families.
-    // Label is just the family name — the axis name shows in the tooltip on hover,
-    // which keeps the radial readable at any container width.
-    const labels = reps.map((r) => r.family.label);
+    // Plot all 12 families always (one spoke per family) so deck shape stays
+    // readable, but label each spoke with the TOP CHILD AXIS in that family.
+    // That's the whole point of this view: at a glance you see which mechanic
+    // each family is leaning on. The family name moves to the tooltip.
+    // For zero-score families we still need a label, so fall back to the
+    // family name dimmed.
+    const labels = reps.map((r) =>
+      r.pick.score > 0 ? prettyAxis(r.pick.id) : r.family.label
+    );
     const values = reps.map((r) => r.pick.score);
     const labelColors = reps.map((r) => (r.pick.score > 0 ? "#e6e9ef" : "#5a6378"));
     const pointColors = reps.map((r) => (r.pick.score > 0 ? "#7c5cff" : "rgba(124, 92, 255, 0.25)"));
@@ -513,12 +518,14 @@ function renderRadar(data) {
             callbacks: {
               label: (c) => {
                 const rep = reps[c.dataIndex];
-                return `${rep.family.label}: ${c.formattedValue}`;
+                return rep.pick.score > 0
+                  ? `${prettyAxis(rep.pick.id)}: ${c.formattedValue}`
+                  : `${rep.family.label}: 0`;
               },
               afterLabel: (c) => {
                 const rep = reps[c.dataIndex];
                 return rep.pick.score > 0
-                  ? `top axis: ${prettyAxis(rep.pick.id)}`
+                  ? `family: ${rep.family.label}`
                   : "no axis active in this family";
               },
             },
