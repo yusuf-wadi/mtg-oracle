@@ -43,6 +43,18 @@ function setTabState(mode, state) {
   }
 }
 
+// Charts created while their panel was hidden have canvas width=0; resize them
+// after the panel becomes visible. Renderers register charts here.
+const panelCharts = { upgrades: [], radar: [], playability: [] };
+function registerChart(mode, chart) {
+  if (panelCharts[mode]) panelCharts[mode].push(chart);
+}
+function clearPanelCharts(mode) {
+  if (!panelCharts[mode]) return;
+  panelCharts[mode].forEach((c) => { try { c.destroy(); } catch (_) {} });
+  panelCharts[mode] = [];
+}
+
 function activateTab(mode) {
   if (tabState[mode] === "idle") return;
   activeTab = mode;
@@ -56,11 +68,17 @@ function activateTab(mode) {
     }
     if (panel) panel.hidden = !isActive;
   });
+  // Resize any charts whose panel just became visible. Wrap in rAF so the
+  // browser has applied the hidden=false style before Chart.js measures.
+  requestAnimationFrame(() => {
+    (panelCharts[mode] || []).forEach((c) => { try { c.resize(); } catch (_) {} });
+  });
 }
 
 function resetTabs(runningModes) {
   activeTab = null;
   MODES.forEach((m) => {
+    clearPanelCharts(m);
     const panel = tabPanel(m);
     if (panel) panel.hidden = true;
     if (runningModes && runningModes.includes(m)) {
@@ -284,7 +302,7 @@ function renderRadar(data) {
     const pointSizes = reps.map((r) => (r.pick.score > 0 ? 5 : 2));
     const maxVal = Math.max(1, ...values);
 
-    new Chart($(`radar_${idx}_top`), {
+    const headlineChart = new Chart($(`radar_${idx}_top`), {
       type: "radar",
       data: {
         labels,
@@ -343,6 +361,7 @@ function renderRadar(data) {
         },
       },
     });
+    registerChart("radar", headlineChart);
 
     function showDrill(panelIdx, family, axisScores, clickedAxisId) {
       const drillWrap = $(`radar_${panelIdx}_drill_wrap`);
@@ -362,7 +381,7 @@ function renderRadar(data) {
       const labelColors = family.axes.map((a) => (axisScores[a.id] || 0) > 0 ? "#e6e9ef" : "#5a6378");
 
       if (drillCanvas._chart) drillCanvas._chart.destroy();
-      drillCanvas._chart = new Chart(drillCanvas, {
+      const drillChart = new Chart(drillCanvas, {
         type: "radar",
         data: {
           labels: dLabels,
@@ -399,9 +418,13 @@ function renderRadar(data) {
           },
         },
       });
+      drillCanvas._chart = drillChart;
+      registerChart("radar", drillChart);
       drillWrap.hidden = false;
       const grid = $(`radar_${panelIdx}_grid`);
       if (grid) grid.classList.add("has-drill");
+      // Resize the headline so it re-fits into the now-narrower column.
+      requestAnimationFrame(() => { try { headlineChart.resize(); } catch (_) {} });
       drillWrap.scrollIntoView({ behavior: "smooth", block: "nearest" });
     }
   });
