@@ -138,23 +138,35 @@
 
   <!-- ===== Results ===== -->
   <section id="results-wrap" hidden>
+    <nav class="tabbar" role="tablist" aria-label="Analysis results">
+      <button type="button" class="tab" data-tab="upgrades" role="tab" aria-selected="false" disabled>
+        <span class="tab-label">Upgrades &amp; Cuts</span>
+        <span class="tab-status" id="tabstatus_upgrades"></span>
+      </button>
+      <button type="button" class="tab" data-tab="radar" role="tab" aria-selected="false" disabled>
+        <span class="tab-label">Deck Radar</span>
+        <span class="tab-status" id="tabstatus_radar"></span>
+      </button>
+      <button type="button" class="tab" data-tab="playability" role="tab" aria-selected="false" disabled>
+        <span class="tab-label">Playability</span>
+        <span class="tab-status" id="tabstatus_playability"></span>
+      </button>
+    </nav>
+
     <!-- Upgrades & Cuts result -->
-    <section class="result-block" id="result_upgrades" hidden>
-      <h2 class="result-heading">Upgrades &amp; Cuts</h2>
+    <section class="tab-panel" id="result_upgrades" role="tabpanel" hidden>
       <div class="meta" id="meta_upgrades"></div>
       <article id="report_upgrades"></article>
     </section>
 
     <!-- Radar result -->
-    <section class="result-block" id="result_radar" hidden>
-      <h2 class="result-heading">Deck Radar</h2>
+    <section class="tab-panel" id="result_radar" role="tabpanel" hidden>
       <div class="meta" id="meta_radar"></div>
       <div id="radar_panels"></div>
     </section>
 
     <!-- Playability result -->
-    <section class="result-block" id="result_playability" hidden>
-      <h2 class="result-heading">Playability</h2>
+    <section class="tab-panel" id="result_playability" role="tabpanel" hidden>
       <div class="meta" id="meta_playability"></div>
       <div id="playability_panels"></div>
     </section>

@@ -7,6 +7,85 @@ const goBtn = $("go");
 const resultsWrap = $("results-wrap");
 
 const MODES = ["upgrades", "radar", "playability"];
+const TAB_LABELS = { upgrades: "Upgrades & Cuts", radar: "Deck Radar", playability: "Playability" };
+
+/* ---------------- tab bar ---------------- */
+
+// Per-mode tab state: "idle" | "loading" | "ready" | "error"
+const tabState = { upgrades: "idle", radar: "idle", playability: "idle" };
+let activeTab = null;
+
+function tabButton(mode) { return document.querySelector(`.tab[data-tab="${mode}"]`); }
+function tabPanel(mode) { return $("result_" + mode); }
+
+function setTabState(mode, state) {
+  tabState[mode] = state;
+  const btn = tabButton(mode);
+  const status = $("tabstatus_" + mode);
+  if (!btn) return;
+  btn.classList.remove("is-loading", "is-ready", "is-error");
+  if (state === "idle") {
+    btn.disabled = true;
+    btn.setAttribute("aria-selected", "false");
+    if (status) status.textContent = "";
+  } else if (state === "loading") {
+    btn.disabled = true;
+    btn.classList.add("is-loading");
+    if (status) status.textContent = "…";
+  } else if (state === "ready") {
+    btn.disabled = false;
+    btn.classList.add("is-ready");
+    if (status) status.textContent = "";
+  } else if (state === "error") {
+    btn.disabled = false;
+    btn.classList.add("is-error");
+    if (status) status.textContent = "!";
+  }
+}
+
+function activateTab(mode) {
+  if (tabState[mode] === "idle") return;
+  activeTab = mode;
+  MODES.forEach((m) => {
+    const btn = tabButton(m);
+    const panel = tabPanel(m);
+    const isActive = (m === mode);
+    if (btn) {
+      btn.classList.toggle("is-active", isActive);
+      btn.setAttribute("aria-selected", isActive ? "true" : "false");
+    }
+    if (panel) panel.hidden = !isActive;
+  });
+}
+
+function resetTabs(runningModes) {
+  activeTab = null;
+  MODES.forEach((m) => {
+    const panel = tabPanel(m);
+    if (panel) panel.hidden = true;
+    if (runningModes && runningModes.includes(m)) {
+      setTabState(m, "loading");
+    } else {
+      setTabState(m, "idle");
+    }
+    const btn = tabButton(m);
+    if (btn) btn.classList.remove("is-active");
+  });
+}
+
+function markTabReady(mode, isError) {
+  setTabState(mode, isError ? "error" : "ready");
+  // First completed tab auto-activates
+  if (!activeTab) activateTab(mode);
+}
+
+document.querySelectorAll(".tab").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    const mode = btn.dataset.tab;
+    if (tabState[mode] === "idle" || tabState[mode] === "loading") return;
+    activateTab(mode);
+  });
+});
 
 // Persisted inputs
 const LS_KEY = "mtg-oracle.v2";
@@ -83,7 +162,7 @@ $("clear-all").addEventListener("click", () => {
   syncModePanels();
   persist();
   resultsWrap.hidden = true;
-  MODES.forEach((m) => { $("result_" + m).hidden = true; });
+  resetTabs();
   statusEl.className = "";
   statusEl.textContent = "";
   $("user").focus();
@@ -120,7 +199,7 @@ function renderUpgrades(data) {
       a.rel = "noopener noreferrer";
     }
   });
-  $("result_upgrades").hidden = false;
+  markTabReady("upgrades");
 }
 
 const TOP_AXES_COUNT = 8;
@@ -294,7 +373,7 @@ function renderRadar(data) {
     }
   });
 
-  $("result_radar").hidden = false;
+  markTabReady("radar");
 }
 
 // Render axis IDs as readable labels: "attacks_trigger" -> "attacks trigger"
@@ -341,7 +420,7 @@ function renderPlayability(data) {
     panels.appendChild(wrap);
   });
 
-  $("result_playability").hidden = false;
+  markTabReady("playability");
 }
 
 function escapeHtml(s) {
@@ -386,7 +465,7 @@ form.addEventListener("submit", async (e) => {
   statusEl.className = "";
   statusEl.textContent = `Running ${modes.join(", ")}…`;
   resultsWrap.hidden = false;
-  MODES.forEach((m) => { $("result_" + m).hidden = true; });
+  resetTabs(modes);
 
   const started = performance.now();
   const tasks = [];
@@ -408,7 +487,7 @@ form.addEventListener("submit", async (e) => {
       }).catch((err) => {
         const meta = $("meta_upgrades");
         meta.innerHTML = `<span class="err">${escapeHtml(err.message)}</span>`;
-        $("result_upgrades").hidden = false;
+        markTabReady("upgrades", true);
       })
     );
   }
@@ -425,7 +504,7 @@ form.addEventListener("submit", async (e) => {
       }).catch((err) => {
         const meta = $("meta_radar");
         meta.innerHTML = `<span class="err">${escapeHtml(err.message)}</span>`;
-        $("result_radar").hidden = false;
+        markTabReady("radar", true);
       })
     );
   }
@@ -446,7 +525,7 @@ form.addEventListener("submit", async (e) => {
       }).catch((err) => {
         const meta = $("meta_playability");
         meta.innerHTML = `<span class="err">${escapeHtml(err.message)}</span>`;
-        $("result_playability").hidden = false;
+        markTabReady("playability", true);
       })
     );
   }
