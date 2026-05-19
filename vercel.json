@@ -20,6 +20,11 @@
       "runtime": "@vercel/python@4.3.0",
       "maxDuration": 60,
       "includeFiles": "{data/**,lib/**}"
+    },
+    "api/decks_index.py": {
+      "runtime": "@vercel/python@4.3.0",
+      "maxDuration": 60,
+      "includeFiles": "lib/**"
     }
   },
   "routes": [
@@ -27,6 +32,7 @@
     { "src": "/api/playability", "dest": "/api/playability.py" },
     { "src": "/api/playability_decks", "dest": "/api/playability_decks.py" },
     { "src": "/api/radar", "dest": "/api/radar.py" },
+    { "src": "/api/decks_index", "dest": "/api/decks_index.py" },
     { "src": "/", "dest": "/public/index.html" },
     { "src": "/(.*)", "dest": "/public/$1" }
   ]
