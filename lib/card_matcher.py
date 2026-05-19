@@ -1850,7 +1850,24 @@ def build_report(
     cfg: dict,
     scoring_mode: str = "keyword",
     replacement_mode: str = "auto",
-) -> None:
+) -> dict:
+    """Render the markdown report AND return structured data for the dashboard.
+
+    Returns a dict:
+      {
+        "decks":     [{name, url, public_id, source, color_identity,
+                       family_scores, axis_scores, axis_match_counts, total_cards}],
+        "candidates":[{name, oracle_id, axis_scores, axis_count,
+                       fits: [{deck_public_id, deck_name, score, reasons}],
+                       already_in: [deck_public_id, ...]}],
+      }
+
+    The markdown is still written to `out_path` for back-compat with existing
+    callers. The structured data backs the deck-radar overlay view that lets
+    the user see exactly where each candidate lands on each deck's profile.
+    """
+    # Lazy import to avoid a circular: deck_source imports card_matcher.
+    from lib import radar as _rd
     top_n = cfg["top_n"]
     fuzzy_threshold = cfg["fuzzy_match_threshold"]
 
@@ -1933,6 +1950,35 @@ def build_report(
     unresolved: list[str] = []
     banned: list[str] = []
 
+    # ---- Structured data: deck radar profiles ----
+    # Score each deck across the 105 mechanical axes so the dashboard can plot
+    # the deck shape + candidate overlays without re-fetching anything.
+    deck_profiles: list[dict] = []
+    for d in decks:
+        corpus = []
+        for entry in d["cards"].values():
+            corpus.append({
+                "name": entry.get("name", ""),
+                "type_line": entry.get("type_line", "") or "",
+                "oracle_text": entry.get("oracle_text", "") or "",
+                "quantity": int(entry.get("quantity") or 1),
+            })
+        ax_scores, fam_scores, ax_matches, total = _rd.score_deck(corpus)
+        ci_str = "".join(c for c in "WUBRG" if c in d["color_identity"]) or "C"
+        deck_profiles.append({
+            "name": d["name"],
+            "url": d["url"],
+            "public_id": d["public_id"],
+            "source": d["source"],
+            "color_identity": ci_str,
+            "family_scores": fam_scores,
+            "axis_scores": ax_scores,
+            "axis_match_counts": ax_matches,
+            "total_cards": total,
+        })
+
+    candidate_records: list[dict] = []
+
     lines.append("## Per-card analysis\n")
     for p in purchases:
         raw_name = p["name"]
@@ -1968,6 +2014,29 @@ def build_report(
             banned.append(info["name"])
         lines.append(header + meta + "\n")
 
+        # ----- Structured candidate record (single-card axis fingerprint) -----
+        card_corpus = [{
+            "name": info["name"],
+            "type_line": info.get("type_line", "") or "",
+            "oracle_text": info.get("oracle_text", "") or "",
+            "quantity": 1,
+        }]
+        card_axis_scores, _card_fam, _card_axis_matches, _card_total = _rd.score_deck(card_corpus)
+        sparse_axes = {a: s for a, s in card_axis_scores.items() if s > 0}
+        candidate_rec = {
+            "name": info["name"],
+            "oracle_id": info.get("oracle_id"),
+            "type_line": info.get("type_line", "") or "",
+            "color_identity": "".join(c for c in "WUBRG" if c in info["color_identity"]) or "C",
+            "cmc": info.get("cmc"),
+            "banned": cfg["enforce_commander_legality"] and not commander_legal(info),
+            "axis_scores": sparse_axes,
+            "axis_count": len(sparse_axes),
+            "fits": [],
+            "already_in": [],
+        }
+        candidate_records.append(candidate_rec)
+
         # ----- Direct hits (with fuzzy fallback + MDFC face matching) -----
         hits = []
         for d in decks:
@@ -1987,6 +2056,8 @@ def build_report(
                     tag += f" _(fuzzy match: \u201c{matched['name']}\u201d)_"
                 lines.append(f"- [{d['name']}]({d['url']}){tag}")
                 direct_hit_summary[d["name"]].append(info["name"])
+                if d["public_id"]:
+                    candidate_rec["already_in"].append(d["public_id"])
             lines.append("")
 
         # ----- Upgrade candidates -----
@@ -2015,6 +2086,12 @@ def build_report(
                     + "; ".join(reasons)
                 )
                 upgrade_summary[d["name"]].append((info["name"], score, rep))
+                candidate_rec["fits"].append({
+                    "deck_public_id": d["public_id"],
+                    "deck_name": d["name"],
+                    "score": score,
+                    "reasons": reasons,
+                })
             lines.append("")
         elif not hits:
             legal_decks = [d["name"] for d in decks if color_legal(info["color_identity"], d["color_identity"])]
@@ -2072,6 +2149,10 @@ def build_report(
             lines.append(f"**Banned in Commander ({len(banned)}):** " + ", ".join(banned))
 
     out_path.write_text("\n".join(lines), encoding="utf-8")
+    return {
+        "decks": deck_profiles,
+        "candidates": candidate_records,
+    }
 
 
 # ---------- Purchase-input gathering ----------

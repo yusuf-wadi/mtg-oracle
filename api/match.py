@@ -147,8 +147,10 @@ def _run_match(payload: dict) -> dict:
     with tempfile.NamedTemporaryFile("w+", suffix=".md", delete=False) as tf:
         out_path = Path(tf.name)
     try:
-        cm.build_report(user, purchases, full_decks, out_path, cfg,
-                        scoring_mode=scoring, replacement_mode=replacement_mode)
+        report_data = cm.build_report(
+            user, purchases, full_decks, out_path, cfg,
+            scoring_mode=scoring, replacement_mode=replacement_mode,
+        )
         markdown = out_path.read_text(encoding="utf-8")
     finally:
         try:
@@ -159,6 +161,7 @@ def _run_match(payload: dict) -> dict:
     return {
         "ok": True,
         "markdown": markdown,
+        "data": report_data,
         "elapsed_sec": round(time.time() - t0, 2),
         "decks_analyzed": len(full_decks),
         "purchases": len(purchases),
