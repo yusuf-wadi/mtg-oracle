@@ -381,6 +381,121 @@ function prettyAxis(id) {
   return id.replace(/_/g, " ");
 }
 
+/* ---------------- playability rendering (ported from mtg-nomulli) ---------------- */
+
+const PLAY_BADGE_CLASS = ["t1", "t2", "t3", "t4", "t5", "t6"];
+const PLAY_LAND_WORDS = ["island", "plains", "forest", "mountain", "swamp", "tower", "pool", "haven", "reach",
+  "land", "gate", "grove", "hearth", "moor", "strand", "heath", "mine", "vista", "mesa", "lagoon",
+  "headquarters", "fortress", "harbor", "wastes", "beacon", "coast", "expanse"];
+const PLAY_MANA_WORDS = ["signet", "talisman", "sol ring", "mox", "bird", "mystic", "pilgrim", "elves",
+  "bloom tender", "faeburrow", "caravan", "myr", "stone", "vault", "crypt", "dynamo"];
+
+function playChipClass(name) {
+  const n = String(name || "").toLowerCase();
+  if (PLAY_LAND_WORDS.some((w) => n.includes(w))) return "is-land";
+  if (PLAY_MANA_WORDS.some((w) => n.includes(w))) return "is-mana";
+  return "";
+}
+
+function el(tag, cls, text) {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text !== undefined && text !== null) e.textContent = text;
+  return e;
+}
+
+function renderManaSources(detail) {
+  const wrap = el("span", "mana-sources-wrap");
+  detail.forEach((src, i) => {
+    if (i > 0) wrap.appendChild(el("span", "mana-sep", "+"));
+    const opts = src.produced_mana || [];
+    if (opts.length === 1) {
+      wrap.appendChild(el("span", "mana-cost", `{${opts[0]}}`));
+    } else {
+      const pill = el("span", "mana-xor");
+      opts.forEach((c, ci) => {
+        if (ci > 0) pill.appendChild(el("span", "xor-sep", "/"));
+        pill.appendChild(el("span", "xor-pip" + (c === src.assigned ? " xor-assigned" : ""), c));
+      });
+      wrap.appendChild(pill);
+    }
+  });
+  return wrap;
+}
+
+function renderPlayTurns(turnsList, turns) {
+  turns.forEach((t, idx) => {
+    const node = el("div", "turn-node");
+    if (idx > 0) node.appendChild(el("div", "turn-connector"));
+    const row = el("div", "turn-row");
+    const badgeClass = PLAY_BADGE_CLASS[idx] || PLAY_BADGE_CLASS[PLAY_BADGE_CLASS.length - 1];
+    row.appendChild(el("div", `turn-badge ${badgeClass}`, `T${idx + 1}`));
+    const detail = el("div", "turn-detail");
+    if (!t.landPlayed && !t.cast) {
+      detail.appendChild(el("div", "no-play", "No land, no play"));
+    } else {
+      if (t.landPlayed) {
+        const r = el("div", "detail-row");
+        r.appendChild(el("span", "detail-label", "Land"));
+        r.appendChild(el("span", "detail-value", t.landPlayed));
+        if (t.landTapped) r.appendChild(el("span", "tapped-badge", "Tapped"));
+        detail.appendChild(r);
+      }
+      if (t.manaSourcesDetail && t.manaSourcesDetail.length > 0) {
+        const r = el("div", "detail-row");
+        r.appendChild(el("span", "detail-label", "Mana"));
+        r.appendChild(renderManaSources(t.manaSourcesDetail));
+        detail.appendChild(r);
+      } else if (t.manaPool && Object.keys(t.manaPool).length > 0) {
+        const poolStr = Object.entries(t.manaPool).filter(([, v]) => v > 0).map(([k, v]) => `${v}{${k}}`).join(" ");
+        const r = el("div", "detail-row");
+        r.appendChild(el("span", "detail-label", "Mana"));
+        r.appendChild(el("span", "mana-cost", poolStr));
+        detail.appendChild(r);
+      }
+      if (t.cast) {
+        const r = el("div", "detail-row");
+        r.appendChild(el("span", "detail-label", "Cast"));
+        r.appendChild(el("span", "cast-value", t.cast.name));
+        if (t.cast.manaCost) r.appendChild(el("span", "mana-cost", t.cast.manaCost));
+        r.appendChild(el("span", "mv-badge", `MV ${t.cast.mv}`));
+        detail.appendChild(r);
+      } else if (t.landPlayed) {
+        const r = el("div", "detail-row");
+        r.appendChild(el("span", "detail-label", "Cast"));
+        r.appendChild(el("span", "no-play", "No play"));
+        detail.appendChild(r);
+      }
+    }
+    row.appendChild(detail);
+    node.appendChild(row);
+    turnsList.appendChild(node);
+  });
+}
+
+function renderPlayTrees(container, sequences) {
+  container.innerHTML = "";
+  if (!sequences || sequences.length === 0) {
+    container.appendChild(el("div", "empty-trees", "No example sequences captured."));
+    return;
+  }
+  const scroll = el("div", "trees-scroll");
+  sequences.forEach((seq, i) => {
+    const card = el("div", "tree-card");
+    const strip = el("div", "hand-strip");
+    strip.appendChild(el("div", "hand-strip-label", `Hand ${i + 1} \u2014 Opening 7`));
+    const chips = el("div", "hand-chips");
+    (seq.openingHand || []).forEach((name) => chips.appendChild(el("span", `chip ${playChipClass(name)}`, name)));
+    strip.appendChild(chips);
+    card.appendChild(strip);
+    const turnsList = el("div", "turns-list");
+    renderPlayTurns(turnsList, seq.turns || []);
+    card.appendChild(turnsList);
+    scroll.appendChild(card);
+  });
+  container.appendChild(scroll);
+}
+
 function renderPlayability(data) {
   const meta = $("meta_playability");
   const panels = $("playability_panels");
@@ -392,31 +507,72 @@ function renderPlayability(data) {
     `<span><b>${data.elapsed_sec}s</b></span>`;
 
   data.decks.forEach((d) => {
-    const wrap = document.createElement("div");
-    wrap.className = "deck-panel";
-    const r = d.result.results;
-    const sequencesHtml = (d.result.exampleSequences || []).slice(0, 3).map((ex, i) => {
-      const hand = (ex.openingHand || []).join(", ");
-      const turns = (ex.turns || []).map((t, ti) => `T${ti + 1}: ${(t.played || []).join(", ") || "—"}`).join("<br>");
-      return `<details><summary>Example ${i + 1}</summary><p><em>opening:</em> ${escapeHtml(hand)}</p><p>${turns}</p></details>`;
-    }).join("");
-    const missingHtml = (d.result.missing && d.result.missing.length)
-      ? `<p class="hint warn">Missing from Scryfall: ${d.result.missing.map(escapeHtml).join(", ")}</p>` : "";
-    wrap.innerHTML = `
-      <h3>${escapeHtml(d.name)} <small class="hint">${d.result.deckSize} cards · ${d.result.colorIdentity || "C"}</small></h3>
-      <div class="play-stats">
-        <div class="stat"><span class="big">${r.playableHandsPct}%</span><span class="lbl">Playable hands</span></div>
-        <div class="stat"><span class="big">${r.onOrAboveCurveThroughTurn3Pct}%</span><span class="lbl">On-curve through T${data.turns_seen}</span></div>
-        <div class="stat"><span class="big">${r.hasPlayableSpellByTurn3Pct}%</span><span class="lbl">Spell by T${data.turns_seen}</span></div>
-      </div>
-      <div class="play-meta">
-        <span>lands <b>${d.result.lands}</b> <em>(${d.result.tappedLands} tapped)</em></span>
-        <span>mana perms <b>${d.result.manaPermanents}</b></span>
-        <span>avg nonland MV <b>${d.result.averageNonlandManaValue}</b></span>
-      </div>
-      ${missingHtml}
-      ${sequencesHtml ? `<div class="sequences">${sequencesHtml}</div>` : ""}
-    `;
+    const result = d.result || {};
+    const r = result.results || {};
+    const wrap = el("div", "play-deck");
+
+    // Deck heading
+    const head = el("h3", "play-deck-heading");
+    head.appendChild(document.createTextNode(d.name));
+    const sub = el("small", "hint");
+    sub.textContent = ` ${result.deckSize || 0} cards \u00b7 ${result.colorIdentity || "C"}`;
+    head.appendChild(sub);
+    wrap.appendChild(head);
+
+    // 4 stat cards (mirroring mtg-nomulli)
+    const stats = el("div", "play-stats-grid");
+    const statCards = [
+      { eyebrow: "Playable hands", value: `${(r.playableHandsPct ?? 0).toFixed(1)}%`, note: `${result.deckSize || 0} resolved cards.` },
+      { eyebrow: "Curve rate", value: `${(r.onOrAboveCurveThroughTurn3Pct ?? 0).toFixed(1)}%`, note: `On or above curve through T${data.turns_seen}.` },
+      { eyebrow: "Has a play", value: `${(r.hasPlayableSpellByTurn3Pct ?? 0).toFixed(1)}%`, note: `Castable by T${data.turns_seen}.` },
+      { eyebrow: "Average MV", value: Number(result.averageNonlandManaValue || 0).toFixed(2), note: "Across nonlands." },
+    ];
+    statCards.forEach((s) => {
+      const card = el("div", "play-stat");
+      card.appendChild(el("div", "eyebrow", s.eyebrow));
+      card.appendChild(el("div", "value", s.value));
+      card.appendChild(el("div", "note", s.note));
+      stats.appendChild(card);
+    });
+    wrap.appendChild(stats);
+
+    // Profile table
+    const missing = result.missing || [];
+    const profileRows = [
+      ["Deck size", result.deckSize ?? "\u2014"],
+      ["Color identity", result.colorIdentity || "C"],
+      ["Lands", result.lands ?? "\u2014"],
+      ["Tapped lands", result.tappedLands ?? "\u2014"],
+      ["Mana permanents", result.manaPermanents ?? "\u2014"],
+      ["Simulations", (result.simulations ?? data.simulations).toLocaleString()],
+      ["Missing cards", missing.length ? missing.slice(0, 6).join(", ") : "None"],
+    ];
+    const table = el("table", "play-profile");
+    const thead = el("thead");
+    const trh = el("tr");
+    trh.appendChild(el("th", null, "Metric"));
+    trh.appendChild(el("th", null, "Value"));
+    thead.appendChild(trh);
+    table.appendChild(thead);
+    const tbody = el("tbody");
+    profileRows.forEach(([k, v]) => {
+      const tr = el("tr");
+      tr.appendChild(el("td", null, k));
+      tr.appendChild(el("td", null, String(v)));
+      tbody.appendChild(tr);
+    });
+    table.appendChild(tbody);
+    wrap.appendChild(table);
+
+    // Example sequences (tree-cards)
+    const trees = el("div", "trees-section");
+    trees.appendChild(el("h4", "trees-heading", "Example Opening Sequences"));
+    trees.appendChild(el("div", "trees-sub", "Sample playable hands \u2014 opening 7, then what happens each turn."));
+    const treesContainer = el("div", "trees-container");
+    renderPlayTrees(treesContainer, result.exampleSequences || []);
+    trees.appendChild(treesContainer);
+    wrap.appendChild(trees);
+
     panels.appendChild(wrap);
   });
 
