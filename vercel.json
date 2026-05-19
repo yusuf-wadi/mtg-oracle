@@ -4,17 +4,29 @@
     "api/match.py": {
       "runtime": "@vercel/python@4.3.0",
       "maxDuration": 60,
-      "includeFiles": "data/**"
+      "includeFiles": "{data/**,lib/**}"
     },
     "api/playability.py": {
       "runtime": "@vercel/python@4.3.0",
       "maxDuration": 60,
       "includeFiles": "lib/**"
+    },
+    "api/playability_decks.py": {
+      "runtime": "@vercel/python@4.3.0",
+      "maxDuration": 60,
+      "includeFiles": "{data/**,lib/**}"
+    },
+    "api/radar.py": {
+      "runtime": "@vercel/python@4.3.0",
+      "maxDuration": 60,
+      "includeFiles": "{data/**,lib/**}"
     }
   },
   "routes": [
     { "src": "/api/match", "dest": "/api/match.py" },
     { "src": "/api/playability", "dest": "/api/playability.py" },
+    { "src": "/api/playability_decks", "dest": "/api/playability_decks.py" },
+    { "src": "/api/radar", "dest": "/api/radar.py" },
     { "src": "/", "dest": "/public/index.html" },
     { "src": "/(.*)", "dest": "/public/$1" }
   ]

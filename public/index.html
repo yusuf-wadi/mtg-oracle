@@ -3,87 +3,166 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>mtg-oracle — purchase / deck matcher</title>
+<title>mtg-oracle — deck dashboard</title>
 <link rel="stylesheet" href="/style.css" />
 </head>
 <body>
 <main>
   <header>
     <h1>mtg-oracle</h1>
-    <p class="tag">Match a purchase list against your Moxfield or Archidekt decks. Commander-legal filtering, fuzzy matching, prerequisite-aware scoring.</p>
+    <p class="tag">Commander deck dashboard — upgrades &amp; cuts, axis radar, and opening-hand playability. Pick one or more modes, share one deck source.</p>
   </header>
 
   <form id="f">
-    <div class="form-toolbar">
-      <button type="button" id="clear-all" class="btn-secondary" title="Reset every field">Clear all</button>
-    </div>
-    <div class="row">
-      <label>
-        <span>Username</span>
-        <input id="user" type="text" placeholder="e.g. waedi" autocomplete="off" />
-      </label>
-      <label>
-        <span>Deck source</span>
-        <select id="source">
-          <option value="moxfield">Moxfield</option>
-          <option value="archidekt">Archidekt</option>
-          <option value="both">Both</option>
-        </select>
-      </label>
-      <label id="archidekt-user-label" style="display:none">
-        <span>Archidekt username <em>(if different)</em></span>
-        <input id="archidekt_user" type="text" placeholder="e.g. Wildcard" autocomplete="off" />
-      </label>
-      <label>
-        <span>Scoring mode</span>
-        <select id="scoring">
-          <option value="hybrid">hybrid (keyword + tfidf)</option>
-          <option value="tfidf">tfidf</option>
-          <option value="keyword">keyword</option>
-        </select>
-      </label>
-      <label>
-        <span>Replacement mode</span>
-        <select id="replacement_mode">
-          <option value="auto">auto (theme-aware)</option>
-          <option value="reinforce">reinforce theme</option>
-          <option value="redundant">reduce redundancy</option>
-        </select>
-      </label>
-    </div>
-
-    <label>
-      <span>Deck filter <em>(optional, comma-separated substrings)</em></span>
-      <input id="decks" type="text" placeholder="paper, counterint++" autocomplete="off" />
-    </label>
-
-    <label>
-      <span>Extra decks <em>(optional — paste Moxfield/Archidekt URLs or IDs, one per line or space-separated)</em></span>
-      <textarea id="extra_decks" rows="3" placeholder="https://moxfield.com/decks/NNcqOt7UlUWCeo6F0FidlQ&#10;https://archidekt.com/decks/12345678" autocomplete="off"></textarea>
-      <small class="hint">Use this if a public deck is missing from your username search (Moxfield's search index can lag behind for new/recently-updated decks). You can also use this without a username to score a single deck directly.</small>
-    </label>
-
-    <label>
-      <span>Paste your card list <em>(one per line, optional "2x" prefix)</em></span>
-      <textarea id="paste" rows="14" placeholder="1x Sram, Senior Edificer&#10;1x Hellkite Charger&#10;Reverberate&#10;..." required></textarea>
-      <div class="field-actions">
-        <button type="button" id="clear-paste" class="btn-secondary" title="Empty the card list">Clear</button>
+    <!-- ===== Shared deck source ===== -->
+    <section class="card">
+      <div class="card-head">
+        <h2>Deck source</h2>
+        <button type="button" id="clear-all" class="btn-secondary" title="Reset every field">Clear all</button>
       </div>
-    </label>
 
+      <div class="row">
+        <label>
+          <span>Username</span>
+          <input id="user" type="text" placeholder="e.g. waedi" autocomplete="off" />
+        </label>
+        <label>
+          <span>Deck source</span>
+          <select id="source">
+            <option value="moxfield">Moxfield</option>
+            <option value="archidekt">Archidekt</option>
+            <option value="both">Both</option>
+          </select>
+        </label>
+        <label id="archidekt-user-label" style="display:none">
+          <span>Archidekt username <em>(if different)</em></span>
+          <input id="archidekt_user" type="text" placeholder="e.g. Wildcard" autocomplete="off" />
+        </label>
+      </div>
+
+      <label>
+        <span>Deck filter <em>(optional, comma-separated substrings)</em></span>
+        <input id="decks" type="text" placeholder="paper, counterint++" autocomplete="off" />
+      </label>
+
+      <label>
+        <span>Extra decks <em>(optional — paste Moxfield/Archidekt URLs or IDs, one per line)</em></span>
+        <textarea id="extra_decks" rows="3" placeholder="https://moxfield.com/decks/NNcqOt7UlUWCeo6F0FidlQ&#10;https://archidekt.com/decks/12345678" autocomplete="off"></textarea>
+        <small class="hint">Use this if a public deck is missing from your username search, or to analyze a single deck without a username.</small>
+      </label>
+    </section>
+
+    <!-- ===== Mode toggles ===== -->
+    <section class="card">
+      <div class="card-head"><h2>Analysis modes</h2></div>
+      <div class="modes">
+        <label class="mode-toggle">
+          <input type="checkbox" id="mode_upgrades" checked />
+          <span class="mode-title">Upgrades &amp; Cuts</span>
+          <span class="mode-desc">Score a purchase list against your decks. Tag- and theme-aware redundant/reinforce/aligned recommendations.</span>
+        </label>
+        <label class="mode-toggle">
+          <input type="checkbox" id="mode_radar" />
+          <span class="mode-title">Deck Radar</span>
+          <span class="mode-desc">Visualize each deck across 12 mechanical axis families (graveyard, combat triggers, ramp, counters, etc.).</span>
+        </label>
+        <label class="mode-toggle">
+          <input type="checkbox" id="mode_playability" />
+          <span class="mode-title">Playability</span>
+          <span class="mode-desc">Monte Carlo opening hands — playable %, curve coverage, castable spell by turn 3.</span>
+        </label>
+      </div>
+    </section>
+
+    <!-- ===== Upgrades & Cuts options ===== -->
+    <section class="card mode-panel" id="panel_upgrades">
+      <div class="card-head"><h2>Upgrades &amp; Cuts options</h2></div>
+      <div class="row">
+        <label>
+          <span>Scoring mode</span>
+          <select id="scoring">
+            <option value="hybrid">hybrid (keyword + tfidf)</option>
+            <option value="tfidf">tfidf</option>
+            <option value="keyword">keyword</option>
+          </select>
+        </label>
+        <label>
+          <span>Replacement mode</span>
+          <select id="replacement_mode">
+            <option value="auto">auto (theme-aware)</option>
+            <option value="reinforce">reinforce theme</option>
+            <option value="redundant">reduce redundancy</option>
+          </select>
+        </label>
+      </div>
+      <label>
+        <span>Paste your card list <em>(one per line, optional "2x" prefix)</em></span>
+        <textarea id="paste" rows="10" placeholder="1x Sram, Senior Edificer&#10;1x Hellkite Charger&#10;Reverberate&#10;..."></textarea>
+        <div class="field-actions">
+          <button type="button" id="clear-paste" class="btn-secondary" title="Empty the card list">Clear</button>
+        </div>
+      </label>
+    </section>
+
+    <!-- ===== Playability options ===== -->
+    <section class="card mode-panel" id="panel_playability" hidden>
+      <div class="card-head"><h2>Playability options</h2></div>
+      <div class="row">
+        <label>
+          <span>Simulations</span>
+          <select id="simulations">
+            <option value="2000">2,000 (fast)</option>
+            <option value="5000">5,000</option>
+            <option value="10000" selected>10,000 (default)</option>
+            <option value="25000">25,000 (slow)</option>
+          </select>
+        </label>
+        <label>
+          <span>Turns simulated</span>
+          <select id="turns_seen">
+            <option value="2">2</option>
+            <option value="3" selected>3</option>
+            <option value="4">4</option>
+          </select>
+        </label>
+      </div>
+      <small class="hint">Runs against every deck found by the source above. If multiple decks are returned, each gets its own report.</small>
+    </section>
+
+    <!-- ===== Submit ===== -->
     <div class="actions">
-      <button type="submit" id="go">Match</button>
+      <button type="submit" id="go">Run analysis</button>
       <span id="status"></span>
     </div>
   </form>
 
-  <section id="result" hidden>
-    <div class="meta" id="meta"></div>
-    <article id="report"></article>
+  <!-- ===== Results ===== -->
+  <section id="results-wrap" hidden>
+    <!-- Upgrades & Cuts result -->
+    <section class="result-block" id="result_upgrades" hidden>
+      <h2 class="result-heading">Upgrades &amp; Cuts</h2>
+      <div class="meta" id="meta_upgrades"></div>
+      <article id="report_upgrades"></article>
+    </section>
+
+    <!-- Radar result -->
+    <section class="result-block" id="result_radar" hidden>
+      <h2 class="result-heading">Deck Radar</h2>
+      <div class="meta" id="meta_radar"></div>
+      <div id="radar_panels"></div>
+    </section>
+
+    <!-- Playability result -->
+    <section class="result-block" id="result_playability" hidden>
+      <h2 class="result-heading">Playability</h2>
+      <div class="meta" id="meta_playability"></div>
+      <div id="playability_panels"></div>
+    </section>
   </section>
 </main>
 
 <script src="/marked.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 <script src="/app.js"></script>
 </body>
 </html>

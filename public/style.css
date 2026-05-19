@@ -18,7 +18,7 @@ body {
   min-height: 100vh;
 }
 
-main { max-width: 880px; margin: 0 auto; padding: 32px 20px 80px; }
+main { max-width: 1100px; margin: 0 auto; padding: 32px 20px 80px; }
 
 header h1 {
   margin: 0 0 4px; font-size: 28px; letter-spacing: -0.02em;
@@ -28,11 +28,69 @@ header h1 {
 header .tag { margin: 0 0 24px; color: var(--muted); }
 
 form {
+  display: flex; flex-direction: column; gap: 16px;
+}
+.card {
   background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
   padding: 18px; display: flex; flex-direction: column; gap: 14px;
 }
-form .row { display: grid; grid-template-columns: 2fr 1fr; gap: 14px; }
-@media (max-width: 560px) { form .row { grid-template-columns: 1fr; } }
+.card-head {
+  display: flex; justify-content: space-between; align-items: center;
+  margin-bottom: 2px;
+}
+.card-head h2 {
+  margin: 0; font-size: 14px; text-transform: uppercase; letter-spacing: 0.08em;
+  color: var(--muted); font-weight: 600;
+}
+form .row { display: grid; grid-template-columns: 2fr 1fr 1fr; gap: 14px; }
+@media (max-width: 720px) { form .row { grid-template-columns: 1fr; } }
+
+/* Mode toggles */
+.modes { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+@media (max-width: 720px) { .modes { grid-template-columns: 1fr; } }
+.mode-toggle {
+  display: grid; grid-template-columns: auto 1fr; grid-template-rows: auto auto;
+  gap: 4px 12px; padding: 12px 14px; cursor: pointer;
+  background: var(--panel-2); border: 1px solid var(--border); border-radius: 10px;
+}
+.mode-toggle input { grid-row: 1 / 3; align-self: start; margin-top: 2px; accent-color: var(--accent); width: 16px; height: 16px; }
+.mode-toggle .mode-title { font-weight: 600; color: var(--text); font-size: 14px; }
+.mode-toggle .mode-desc { color: var(--muted); font-size: 12.5px; line-height: 1.4; }
+.mode-toggle:has(input:checked) { border-color: var(--accent); background: linear-gradient(180deg, rgba(124,92,255,0.08), transparent), var(--panel-2); }
+
+/* Result blocks */
+.result-block { margin-top: 28px; }
+.result-heading {
+  font-size: 18px; margin: 0 0 12px; color: var(--accent-2);
+  border-bottom: 1px solid var(--border); padding-bottom: 6px;
+}
+.deck-panel {
+  background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+  padding: 16px 18px; margin-bottom: 14px;
+}
+.deck-panel h3 { margin: 0 0 12px; font-size: 16px; }
+.deck-panel h3 small { font-weight: normal; margin-left: 8px; }
+.deck-panel h4 { margin: 0 0 8px; font-size: 13px; color: var(--muted); }
+
+/* Radar */
+.radar-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; align-items: start; }
+@media (max-width: 720px) { .radar-grid { grid-template-columns: 1fr; } }
+.radar-cell { background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px; padding: 10px; }
+.radar-cell canvas { max-width: 100%; }
+
+/* Playability stats */
+.play-stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-bottom: 12px; }
+.stat {
+  background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px;
+  padding: 12px; display: flex; flex-direction: column; align-items: center; gap: 4px;
+}
+.stat .big { font-size: 22px; font-weight: 700; color: var(--accent-2); }
+.stat .lbl { font-size: 12px; color: var(--muted); text-align: center; }
+.play-meta { display: flex; flex-wrap: wrap; gap: 14px; color: var(--muted); font-size: 13px; margin-bottom: 8px; }
+.play-meta b { color: var(--text); }
+.play-meta em { color: #6c7585; font-style: normal; }
+.sequences { margin-top: 10px; }
+.hint.warn { color: var(--warn); }
 
 label { display: flex; flex-direction: column; gap: 6px; font-size: 13px; color: var(--muted); }
 label span em { color: #6c7585; font-style: normal; font-weight: 400; }
@@ -83,12 +141,12 @@ button:disabled { opacity: 0.55; cursor: not-allowed; }
 #status.err { color: var(--err); }
 #status.ok { color: var(--accent-2); }
 
-#result { margin-top: 28px; }
-#meta {
+#meta, .meta {
   display: flex; gap: 16px; flex-wrap: wrap; margin-bottom: 14px;
   color: var(--muted); font-size: 13px;
 }
-#meta b { color: var(--text); font-weight: 600; }
+#meta b, .meta b { color: var(--text); font-weight: 600; }
+.meta .err { color: var(--err); }
 
 article {
   background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
