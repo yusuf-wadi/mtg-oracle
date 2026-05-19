@@ -30,6 +30,7 @@ header .tag { margin: 0 0 24px; color: var(--muted); }
 form {
   display: flex; flex-direction: column; gap: 16px;
 }
+[hidden] { display: none !important; }
 .card {
   background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
   padding: 18px; display: flex; flex-direction: column; gap: 14px;
