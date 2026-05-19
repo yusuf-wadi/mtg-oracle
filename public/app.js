@@ -250,9 +250,9 @@ function renderRadar(data) {
     wrap.className = "deck-panel";
     wrap.innerHTML = `
       <h3>${escapeHtml(d.name)} <small class="hint">${d.cards} cards · ${d.color_identity || "C"} · ${activeReps.length}/${familyCount} families active · ${concentration}% of signal in top axes</small></h3>
-      <div class="radar-grid">
-        <div class="radar-cell">
-          <div class="radar-cell-hint">Top axis per family · click to drill into that family</div>
+      <div class="radar-grid" id="radar_${idx}_grid">
+        <div class="radar-cell radar-headline">
+          <div class="radar-cell-hint">Top axis per family · click a point to drill into that family</div>
           <canvas id="radar_${idx}_top"></canvas>
         </div>
         <div class="radar-cell" id="radar_${idx}_drill_wrap" hidden>
@@ -274,8 +274,10 @@ function renderRadar(data) {
       return;
     }
 
-    // Plot all 12 families always; dim labels for zero-score families
-    const labels = reps.map((r) => `${r.family.label}\u2009\u2014\u2009${prettyAxis(r.pick.id)}`);
+    // Plot all 12 families always; dim labels for zero-score families.
+    // Label is just the family name — the axis name shows in the tooltip on hover,
+    // which keeps the radial readable at any container width.
+    const labels = reps.map((r) => r.family.label);
     const values = reps.map((r) => r.pick.score);
     const labelColors = reps.map((r) => (r.pick.score > 0 ? "#e6e9ef" : "#5a6378"));
     const pointColors = reps.map((r) => (r.pick.score > 0 ? "#7c5cff" : "rgba(124, 92, 255, 0.25)"));
@@ -300,6 +302,7 @@ function renderRadar(data) {
       options: {
         responsive: true,
         maintainAspectRatio: true,
+        layout: { padding: 28 },
         onClick: (evt, els) => {
           if (!els.length) return;
           const ix = els[0].index;
@@ -329,7 +332,8 @@ function renderRadar(data) {
             grid: { color: "#262b3a" },
             pointLabels: {
               color: labelColors,
-              font: { size: 11, weight: "500" },
+              font: { size: 12, weight: "500" },
+              padding: 8,
             },
             ticks: { color: "#6c7585", backdropColor: "transparent", maxTicksLimit: 4 },
             suggestedMin: 0,
@@ -395,6 +399,8 @@ function renderRadar(data) {
         },
       });
       drillWrap.hidden = false;
+      const grid = $(`radar_${panelIdx}_grid`);
+      if (grid) grid.classList.add("has-drill");
       drillWrap.scrollIntoView({ behavior: "smooth", block: "nearest" });
     }
   });
