@@ -22,12 +22,28 @@ def resolve_decks(payload: dict) -> tuple[list[dict], dict]:
     On user-input error: raises ValueError with a human-readable message.
     Fetch errors for individual decks are collected in meta['fetch_errors']
     rather than raised.
+
+    Optional payload keys:
+      - ``selected_decks``: list of ``{source, publicId}`` dicts. When provided
+        (non-empty), the user listing step is skipped entirely and only these
+        decks are fetched. ``extra_decks`` text is still honored on top.
     """
     user = (payload.get("user") or "").strip()
     extra_decks_raw = payload.get("extra_decks") or ""
     extra_refs = cm.parse_deck_references(extra_decks_raw)
-    if not user and not extra_refs:
-        raise ValueError("Provide a username or at least one direct deck URL/ID.")
+
+    selected_raw = payload.get("selected_decks") or []
+    selected_refs: list[tuple[str, str]] = []
+    for s in selected_raw:
+        if not isinstance(s, dict):
+            continue
+        src = (s.get("source") or "moxfield").strip().lower()
+        pid = (s.get("publicId") or "").strip()
+        if pid and src in ("moxfield", "archidekt"):
+            selected_refs.append((src, pid))
+
+    if not user and not extra_refs and not selected_refs:
+        raise ValueError("Provide a username, pick decks, or paste at least one deck URL/ID.")
 
     source = (payload.get("source") or "moxfield").strip().lower()
     if source not in ("moxfield", "archidekt", "both"):
@@ -41,7 +57,13 @@ def resolve_decks(payload: dict) -> tuple[list[dict], dict]:
     sources = ["moxfield", "archidekt"] if source == "both" else [source]
     user_decks: list[dict] = []
     source_errors: list[str] = []
-    if user:
+
+    # If the caller has explicitly picked decks, skip the user listing flow.
+    # Build synthetic stubs so the downstream fetch loop reuses one code path.
+    if selected_refs:
+        for src, pid in selected_refs:
+            user_decks.append({"publicId": pid, "_source": src})
+    elif user:
         for s in sources:
             u = archidekt_user if s == "archidekt" else user
             try:
@@ -53,7 +75,7 @@ def resolve_decks(payload: dict) -> tuple[list[dict], dict]:
                 chunk = [d for d in chunk if d.get("format") == cm._ARCHIDEKT_COMMANDER_FORMAT]
             user_decks.extend(chunk)
 
-    if deck_patterns:
+    if deck_patterns and not selected_refs:
         user_decks = cm.filter_decks(user_decks, deck_patterns)
 
     have_keys = {(d.get("_source") or "moxfield", d.get("publicId")) for d in user_decks}
@@ -71,7 +93,7 @@ def resolve_decks(payload: dict) -> tuple[list[dict], dict]:
             msg += f" [{detail}]"
         raise ValueError(msg)
 
-    if deck_patterns and not user_decks and not extra_refs:
+    if deck_patterns and not selected_refs and not user_decks and not extra_refs:
         raise ValueError("No decks matched the provided deck filter.")
 
     full_decks: list[dict] = []
@@ -111,6 +133,7 @@ def resolve_decks(payload: dict) -> tuple[list[dict], dict]:
         "user": user,
         "archidekt_user": archidekt_user,
         "extra_refs": extra_refs,
+        "selected_refs": selected_refs,
         "source_errors": source_errors,
         "fetch_errors": fetch_errors,
     }

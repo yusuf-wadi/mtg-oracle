@@ -45,10 +45,19 @@ TURNS_MAX = 6
 
 
 def _run(payload: dict) -> dict:
-    try:
-        full_decks, meta = ds.resolve_decks(payload)
-    except ValueError as e:
-        return {"ok": False, "error": str(e)}
+    # Paste-overrides path: if the user supplies a raw decklist, skip the deck
+    # source resolver and analyze the pasted list as a single "deck".
+    paste = (payload.get("paste") or "").strip()
+    pasted_path = bool(paste)
+
+    if pasted_path:
+        full_decks = []
+        meta = {"source": "paste", "sources_tried": [], "fetch_errors": []}
+    else:
+        try:
+            full_decks, meta = ds.resolve_decks(payload)
+        except ValueError as e:
+            return {"ok": False, "error": str(e)}
 
     try:
         simulations = int(payload.get("simulations") or 10000)
@@ -64,28 +73,44 @@ def _run(payload: dict) -> dict:
 
     t0 = time.time()
     deck_results = []
-    for deck in full_decks:
-        decklist = ds.deck_decklist_text(deck)
-        if not decklist.strip():
-            deck_results.append({
-                "name": ds.deck_display_name(deck),
-                "error": "Empty deck after extraction.",
-            })
-            continue
+
+    if pasted_path:
         try:
-            result = analyze(decklist, simulations=simulations, turns_seen=turns_seen)
+            result = analyze(paste, simulations=simulations, turns_seen=turns_seen)
+            deck_results.append({
+                "name": (payload.get("paste_name") or "Pasted decklist").strip() or "Pasted decklist",
+                "source": "paste",
+                "publicId": None,
+                "result": result,
+            })
         except Exception as e:  # noqa: BLE001
             deck_results.append({
-                "name": ds.deck_display_name(deck),
+                "name": "Pasted decklist",
                 "error": f"{type(e).__name__}: {e}",
             })
-            continue
-        deck_results.append({
-            "name": ds.deck_display_name(deck),
-            "source": deck.get("_source") or "moxfield",
-            "publicId": deck.get("publicId"),
-            "result": result,
-        })
+    else:
+        for deck in full_decks:
+            decklist = ds.deck_decklist_text(deck)
+            if not decklist.strip():
+                deck_results.append({
+                    "name": ds.deck_display_name(deck),
+                    "error": "Empty deck after extraction.",
+                })
+                continue
+            try:
+                result = analyze(decklist, simulations=simulations, turns_seen=turns_seen)
+            except Exception as e:  # noqa: BLE001
+                deck_results.append({
+                    "name": ds.deck_display_name(deck),
+                    "error": f"{type(e).__name__}: {e}",
+                })
+                continue
+            deck_results.append({
+                "name": ds.deck_display_name(deck),
+                "source": deck.get("_source") or "moxfield",
+                "publicId": deck.get("publicId"),
+                "result": result,
+            })
 
     return {
         "ok": True,

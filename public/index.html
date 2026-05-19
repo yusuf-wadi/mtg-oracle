@@ -10,7 +10,7 @@
 <main>
   <header>
     <h1>mtg-oracle</h1>
-    <p class="tag">Commander deck dashboard — upgrades &amp; cuts, axis radar, and opening-hand playability. Pick one or more modes, share one deck source.</p>
+    <p class="tag">Commander deck dashboard. Pick one analysis mode — Deck Radar always runs alongside.</p>
   </header>
 
   <form id="f">
@@ -50,28 +50,41 @@
         <textarea id="extra_decks" rows="3" placeholder="https://moxfield.com/decks/NNcqOt7UlUWCeo6F0FidlQ&#10;https://archidekt.com/decks/12345678" autocomplete="off"></textarea>
         <small class="hint">Use this if a public deck is missing from your username search, or to analyze a single deck without a username.</small>
       </label>
+
+      <!-- Explicit deck picker (only meaningful when a username is supplied) -->
+      <div class="deck-picker" id="deck-picker">
+        <div class="deck-picker-head">
+          <button type="button" id="load-decks" class="btn-secondary">Load decks</button>
+          <span id="deck-picker-status" class="hint"></span>
+        </div>
+        <div class="deck-picker-body" id="deck-picker-body" hidden>
+          <div class="deck-picker-tools">
+            <button type="button" class="btn-link" id="deck-pick-all">Select all</button>
+            <button type="button" class="btn-link" id="deck-pick-none">Clear</button>
+            <button type="button" class="btn-link" id="deck-pick-refresh" title="Force re-fetch from source">Refresh</button>
+            <span id="deck-pick-cache-hint" class="hint"></span>
+          </div>
+          <ul class="deck-pick-list" id="deck-pick-list"></ul>
+        </div>
+      </div>
     </section>
 
-    <!-- ===== Mode toggles ===== -->
+    <!-- ===== Analysis mode (single-select; Radar always runs) ===== -->
     <section class="card">
-      <div class="card-head"><h2>Analysis modes</h2></div>
-      <div class="modes">
-        <label class="mode-toggle">
-          <input type="checkbox" id="mode_upgrades" checked />
+      <div class="card-head"><h2>Analysis mode</h2></div>
+      <div class="mode-radio-row">
+        <label class="mode-radio">
+          <input type="radio" name="primary_mode" value="upgrades" checked />
           <span class="mode-title">Upgrades &amp; Cuts</span>
-          <span class="mode-desc">Score a purchase list against your decks. Tag- and theme-aware redundant/reinforce/aligned recommendations.</span>
+          <span class="mode-desc">Score a purchase list against your decks. Tag- and theme-aware redundant / reinforce / aligned recommendations.</span>
         </label>
-        <label class="mode-toggle">
-          <input type="checkbox" id="mode_radar" />
-          <span class="mode-title">Deck Radar</span>
-          <span class="mode-desc">Visualize each deck across 12 mechanical axis families (graveyard, combat triggers, ramp, counters, etc.).</span>
-        </label>
-        <label class="mode-toggle">
-          <input type="checkbox" id="mode_playability" />
+        <label class="mode-radio">
+          <input type="radio" name="primary_mode" value="playability" />
           <span class="mode-title">Playability</span>
-          <span class="mode-desc">Monte Carlo opening hands — playable %, curve coverage, castable spell by turn 3.</span>
+          <span class="mode-desc">Monte Carlo opening hands — playable %, curve coverage, castable spell by turn 3. Paste a list to override your selected decks.</span>
         </label>
       </div>
+      <small class="hint">Deck Radar always runs alongside whichever mode you pick.</small>
     </section>
 
     <!-- ===== Upgrades & Cuts options ===== -->
@@ -139,17 +152,17 @@
   <!-- ===== Results ===== -->
   <section id="results-wrap" hidden>
     <nav class="tabbar" role="tablist" aria-label="Analysis results">
-      <button type="button" class="tab" data-tab="upgrades" role="tab" aria-selected="false" disabled>
+      <button type="button" class="tab" data-tab="upgrades" role="tab" aria-selected="false" disabled hidden>
         <span class="tab-label">Upgrades &amp; Cuts</span>
         <span class="tab-status" id="tabstatus_upgrades"></span>
+      </button>
+      <button type="button" class="tab" data-tab="playability" role="tab" aria-selected="false" disabled hidden>
+        <span class="tab-label">Playability</span>
+        <span class="tab-status" id="tabstatus_playability"></span>
       </button>
       <button type="button" class="tab" data-tab="radar" role="tab" aria-selected="false" disabled>
         <span class="tab-label">Deck Radar</span>
         <span class="tab-status" id="tabstatus_radar"></span>
-      </button>
-      <button type="button" class="tab" data-tab="playability" role="tab" aria-selected="false" disabled>
-        <span class="tab-label">Playability</span>
-        <span class="tab-status" id="tabstatus_playability"></span>
       </button>
     </nav>
 

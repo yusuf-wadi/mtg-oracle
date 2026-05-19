@@ -9,6 +9,14 @@ const resultsWrap = $("results-wrap");
 const MODES = ["upgrades", "radar", "playability"];
 const TAB_LABELS = { upgrades: "Upgrades & Cuts", radar: "Deck Radar", playability: "Playability" };
 
+// Primary modes (radio-select). Radar always runs alongside.
+const PRIMARY_MODES = ["upgrades", "playability"];
+
+function getPrimaryMode() {
+  const r = document.querySelector('input[name="primary_mode"]:checked');
+  return r ? r.value : "upgrades";
+}
+
 /* ---------------- tab bar ---------------- */
 
 // Per-mode tab state: "idle" | "loading" | "ready" | "error"
@@ -87,7 +95,12 @@ function resetTabs(runningModes) {
       setTabState(m, "idle");
     }
     const btn = tabButton(m);
-    if (btn) btn.classList.remove("is-active");
+    if (btn) {
+      btn.classList.remove("is-active");
+      // Hide tab button entirely for modes that aren't running this turn.
+      // Radar always runs, so its tab is always shown.
+      btn.hidden = !runningModes || !runningModes.includes(m);
+    }
   });
 }
 
@@ -119,8 +132,9 @@ try {
   if (saved.paste) $("paste").value = saved.paste;
   if (saved.simulations) $("simulations").value = saved.simulations;
   if (saved.turns_seen) $("turns_seen").value = saved.turns_seen;
-  if (saved.modes) {
-    MODES.forEach((m) => { $("mode_" + m).checked = !!saved.modes[m]; });
+  if (saved.primary_mode && PRIMARY_MODES.includes(saved.primary_mode)) {
+    const r = document.querySelector(`input[name="primary_mode"][value="${saved.primary_mode}"]`);
+    if (r) r.checked = true;
   }
 } catch (_) {}
 
@@ -132,16 +146,16 @@ updateArchidektFieldVisibility();
 $("source").addEventListener("change", updateArchidektFieldVisibility);
 
 function syncModePanels() {
-  $("panel_upgrades").hidden = !$("mode_upgrades").checked;
-  $("panel_playability").hidden = !$("mode_playability").checked;
-  // radar has no options panel yet
+  const primary = getPrimaryMode();
+  $("panel_upgrades").hidden = primary !== "upgrades";
+  $("panel_playability").hidden = primary !== "playability";
 }
 syncModePanels();
-MODES.forEach((m) => $("mode_" + m).addEventListener("change", () => { syncModePanels(); persist(); }));
+document.querySelectorAll('input[name="primary_mode"]').forEach((r) => {
+  r.addEventListener("change", () => { syncModePanels(); persist(); });
+});
 
 function persist() {
-  const modes = {};
-  MODES.forEach((m) => { modes[m] = $("mode_" + m).checked; });
   localStorage.setItem(LS_KEY, JSON.stringify({
     user: $("user").value,
     scoring: $("scoring").value,
@@ -153,7 +167,7 @@ function persist() {
     paste: $("paste").value,
     simulations: $("simulations").value,
     turns_seen: $("turns_seen").value,
-    modes,
+    primary_mode: getPrimaryMode(),
   }));
 }
 const persistedInputs = ["user", "scoring", "replacement_mode", "source", "archidekt_user", "decks", "extra_decks", "paste", "simulations", "turns_seen"];
@@ -173,9 +187,12 @@ $("clear-all").addEventListener("click", () => {
   $("replacement_mode").value = "auto";
   $("simulations").value = "10000";
   $("turns_seen").value = "3";
-  $("mode_upgrades").checked = true;
-  $("mode_radar").checked = false;
-  $("mode_playability").checked = false;
+  const upgradesRadio = document.querySelector('input[name="primary_mode"][value="upgrades"]');
+  if (upgradesRadio) upgradesRadio.checked = true;
+  // Also clear any picked decks
+  pickedDeckKeys.clear();
+  $("deck-picker-body").hidden = true;
+  $("deck-picker-status").textContent = "";
   updateArchidektFieldVisibility();
   syncModePanels();
   persist();
@@ -185,6 +202,169 @@ $("clear-all").addEventListener("click", () => {
   statusEl.textContent = "";
   $("user").focus();
 });
+
+/* ---------------- deck picker ---------------- */
+
+const DECKS_INDEX_LS_PREFIX = "mtg-oracle.deck-index.";
+const DECKS_INDEX_TTL_MS = 60 * 60 * 1000; // 1 hour
+
+// Set of "source:publicId" keys the user has checked.
+const pickedDeckKeys = new Set();
+// Currently displayed list of {source, publicId, name, colors, url}
+let currentDeckIndex = [];
+
+function deckKey(d) { return `${d.source}:${d.publicId}`; }
+
+function deckIndexCacheKey() {
+  const user = $("user").value.trim();
+  const source = $("source").value;
+  const archi = $("archidekt_user").value.trim();
+  return `${DECKS_INDEX_LS_PREFIX}${source}::${user}::${archi}`;
+}
+
+function readDeckIndexCache() {
+  try {
+    const raw = localStorage.getItem(deckIndexCacheKey());
+    if (!raw) return null;
+    const obj = JSON.parse(raw);
+    if (!obj || !Array.isArray(obj.decks)) return null;
+    if (typeof obj.ts !== "number") return null;
+    if (Date.now() - obj.ts > DECKS_INDEX_TTL_MS) return null;
+    return obj;
+  } catch (_) { return null; }
+}
+
+function writeDeckIndexCache(decks) {
+  try {
+    localStorage.setItem(deckIndexCacheKey(), JSON.stringify({ ts: Date.now(), decks }));
+  } catch (_) {}
+}
+
+function fmtCacheAge(ts) {
+  const min = Math.floor((Date.now() - ts) / 60000);
+  if (min < 1) return "just now";
+  if (min === 1) return "1 min ago";
+  if (min < 60) return `${min} min ago`;
+  const h = Math.floor(min / 60);
+  return h === 1 ? "1 hour ago" : `${h} hours ago`;
+}
+
+function renderDeckPicker(decks, opts = {}) {
+  currentDeckIndex = decks;
+  const body = $("deck-picker-body");
+  const list = $("deck-pick-list");
+  const cacheHint = $("deck-pick-cache-hint");
+  list.innerHTML = "";
+
+  if (!decks.length) {
+    body.hidden = false;
+    list.innerHTML = '<li class="hint" style="grid-column:1/-1;color:var(--muted)">No decks found for that username.</li>';
+    cacheHint.textContent = "";
+    return;
+  }
+
+  decks.forEach((d) => {
+    const key = deckKey(d);
+    const li = document.createElement("li");
+    const label = document.createElement("label");
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.dataset.key = key;
+    cb.checked = pickedDeckKeys.has(key);
+    cb.addEventListener("change", () => {
+      if (cb.checked) pickedDeckKeys.add(key); else pickedDeckKeys.delete(key);
+      updateDeckPickerStatus();
+    });
+    const nameSpan = document.createElement("span");
+    nameSpan.className = "deck-pick-name";
+    nameSpan.textContent = d.name;
+    nameSpan.title = d.name;
+    const metaSpan = document.createElement("span");
+    metaSpan.className = "deck-pick-meta";
+    metaSpan.innerHTML = `<span class="deck-pick-src">${escapeHtml(d.source[0].toUpperCase())}</span>${escapeHtml(d.colors || "C")}`;
+    label.appendChild(cb);
+    label.appendChild(nameSpan);
+    label.appendChild(metaSpan);
+    li.appendChild(label);
+    list.appendChild(li);
+  });
+
+  body.hidden = false;
+  if (opts.cacheTs) cacheHint.textContent = `cached · ${fmtCacheAge(opts.cacheTs)}`;
+  else cacheHint.textContent = "";
+  updateDeckPickerStatus();
+}
+
+function updateDeckPickerStatus() {
+  const total = currentDeckIndex.length;
+  const picked = currentDeckIndex.filter((d) => pickedDeckKeys.has(deckKey(d))).length;
+  $("deck-picker-status").textContent = total
+    ? `${picked}/${total} selected`
+    : "";
+}
+
+async function loadDecks({ force = false } = {}) {
+  const user = $("user").value.trim();
+  if (!user) {
+    $("deck-picker-status").className = "err";
+    $("deck-picker-status").textContent = "Enter a username first.";
+    setTimeout(() => { $("deck-picker-status").className = "hint"; $("deck-picker-status").textContent = ""; }, 2500);
+    return;
+  }
+
+  if (!force) {
+    const cached = readDeckIndexCache();
+    if (cached) {
+      renderDeckPicker(cached.decks, { cacheTs: cached.ts });
+      return;
+    }
+  }
+
+  const btn = $("load-decks");
+  const status = $("deck-picker-status");
+  btn.disabled = true;
+  status.className = "hint";
+  status.textContent = "Loading\u2026";
+  try {
+    const res = await fetch("/api/decks_index", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        user,
+        source: $("source").value,
+        archidekt_user: $("archidekt_user").value.trim(),
+      }),
+    });
+    const data = await res.json();
+    if (!data.ok) throw new Error(data.error || "Failed to load decks");
+    writeDeckIndexCache(data.decks);
+    renderDeckPicker(data.decks);
+  } catch (err) {
+    status.className = "err";
+    status.textContent = err.message || String(err);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+$("load-decks").addEventListener("click", () => loadDecks());
+$("deck-pick-refresh").addEventListener("click", () => loadDecks({ force: true }));
+$("deck-pick-all").addEventListener("click", () => {
+  currentDeckIndex.forEach((d) => pickedDeckKeys.add(deckKey(d)));
+  document.querySelectorAll("#deck-pick-list input[type=checkbox]").forEach((cb) => { cb.checked = true; });
+  updateDeckPickerStatus();
+});
+$("deck-pick-none").addEventListener("click", () => {
+  pickedDeckKeys.clear();
+  document.querySelectorAll("#deck-pick-list input[type=checkbox]").forEach((cb) => { cb.checked = false; });
+  updateDeckPickerStatus();
+});
+
+// Auto-render any cached picker on page load (if user is filled in)
+if ($("user").value.trim()) {
+  const cached = readDeckIndexCache();
+  if (cached) renderDeckPicker(cached.decks, { cacheTs: cached.ts });
+}
 
 /* ---------------- result renderers ---------------- */
 
@@ -645,12 +825,14 @@ function escapeHtml(s) {
 form.addEventListener("submit", async (e) => {
   e.preventDefault();
 
-  const modes = MODES.filter((m) => $("mode_" + m).checked);
-  if (!modes.length) {
-    statusEl.className = "err";
-    statusEl.textContent = "Pick at least one analysis mode.";
-    return;
-  }
+  const primary = getPrimaryMode();
+  // Radar always runs alongside the primary mode.
+  const modes = [primary, "radar"];
+
+  // Build selected_decks array from the picker (source+publicId pairs)
+  const selectedDecks = currentDeckIndex
+    .filter((d) => pickedDeckKeys.has(deckKey(d)))
+    .map((d) => ({ source: d.source, publicId: d.publicId }));
 
   const shared = {
     user: $("user").value.trim(),
@@ -658,37 +840,53 @@ form.addEventListener("submit", async (e) => {
     archidekt_user: $("archidekt_user").value.trim(),
     decks: $("decks").value.trim() ? $("decks").value.split(",").map((s) => s.trim()).filter(Boolean) : [],
     extra_decks: $("extra_decks").value.trim(),
+    selected_decks: selectedDecks,
   };
-  if (!shared.user && !shared.extra_decks) {
+
+  const paste = $("paste").value.trim();
+  // Playability paste-overrides-account: if a paste is provided in playability
+  // mode, we skip account-based deck resolution.
+  const playabilityUsesPaste = (primary === "playability") && !!paste;
+
+  // Validation: we need *some* deck source unless playability is using paste.
+  const hasAnyDeckSource = shared.user || shared.extra_decks || selectedDecks.length > 0;
+  if (!hasAnyDeckSource && !playabilityUsesPaste) {
     statusEl.className = "err";
-    statusEl.textContent = "Provide a username or at least one extra deck URL/ID.";
+    statusEl.textContent = "Provide a username, pick decks, paste a list, or add an extra deck URL.";
     return;
   }
 
-  // Upgrades mode also requires a paste list
-  if (modes.includes("upgrades") && !$("paste").value.trim()) {
+  // Upgrades requires a card list
+  if (primary === "upgrades" && !paste) {
     statusEl.className = "err";
-    statusEl.textContent = "Upgrades & Cuts needs a card list. Paste one or uncheck the mode.";
+    statusEl.textContent = "Upgrades & Cuts needs a card list. Paste one or switch modes.";
     return;
   }
+
+  // If playability is using the paste-only path, radar still needs a deck
+  // source. If none is present, gracefully degrade by skipping the radar call.
+  const skipRadar = playabilityUsesPaste && !hasAnyDeckSource;
+  const runningModes = skipRadar ? [primary] : modes;
 
   goBtn.disabled = true;
   statusEl.className = "";
-  statusEl.textContent = `Running ${modes.join(", ")}…`;
+  const modeLabel = (primary === "upgrades" ? "upgrades" : "playability")
+    + (skipRadar ? "" : " + radar");
+  statusEl.textContent = `Running ${modeLabel}\u2026`;
   resultsWrap.hidden = false;
-  resetTabs(modes);
+  resetTabs(runningModes);
 
   const started = performance.now();
   const tasks = [];
 
-  if (modes.includes("upgrades")) {
+  if (primary === "upgrades") {
     tasks.push(
       fetch("/api/match", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           ...shared,
-          paste: $("paste").value.trim(),
+          paste,
           scoring: $("scoring").value,
           replacement_mode: $("replacement_mode").value,
         }),
@@ -703,7 +901,29 @@ form.addEventListener("submit", async (e) => {
     );
   }
 
-  if (modes.includes("radar")) {
+  if (primary === "playability") {
+    tasks.push(
+      fetch("/api/playability_decks", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          ...shared,
+          paste: playabilityUsesPaste ? paste : "",
+          simulations: parseInt($("simulations").value, 10),
+          turns_seen: parseInt($("turns_seen").value, 10),
+        }),
+      }).then((r) => r.json()).then((data) => {
+        if (!data.ok) throw new Error(`Playability: ${data.error || "failed"}`);
+        renderPlayability(data);
+      }).catch((err) => {
+        const meta = $("meta_playability");
+        meta.innerHTML = `<span class="err">${escapeHtml(err.message)}</span>`;
+        markTabReady("playability", true);
+      })
+    );
+  }
+
+  if (!skipRadar) {
     tasks.push(
       fetch("/api/radar", {
         method: "POST",
@@ -716,27 +936,6 @@ form.addEventListener("submit", async (e) => {
         const meta = $("meta_radar");
         meta.innerHTML = `<span class="err">${escapeHtml(err.message)}</span>`;
         markTabReady("radar", true);
-      })
-    );
-  }
-
-  if (modes.includes("playability")) {
-    tasks.push(
-      fetch("/api/playability_decks", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          ...shared,
-          simulations: parseInt($("simulations").value, 10),
-          turns_seen: parseInt($("turns_seen").value, 10),
-        }),
-      }).then((r) => r.json()).then((data) => {
-        if (!data.ok) throw new Error(`Playability: ${data.error || "failed"}`);
-        renderPlayability(data);
-      }).catch((err) => {
-        const meta = $("meta_playability");
-        meta.innerHTML = `<span class="err">${escapeHtml(err.message)}</span>`;
-        markTabReady("playability", true);
       })
     );
   }
