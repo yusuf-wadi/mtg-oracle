@@ -228,16 +228,19 @@ def axis_to_family() -> dict[str, str]:
     }
 
 
-def score_deck(corpus: Iterable[dict]) -> tuple[dict[str, float], dict[str, float], int]:
+def score_deck(corpus: Iterable[dict]) -> tuple[dict[str, float], dict[str, float], dict[str, int], int]:
     """Score a deck across the 105 axes.
 
     corpus: iterable of {name, type_line, oracle_text, quantity}.
-    Returns (axis_scores, family_scores, total_cards).
+    Returns (axis_scores, family_scores, axis_match_counts, total_cards).
 
-    Each card contributes its quantity to an axis if any of that axis's
-    patterns matches. Family scores are the sum of their axis scores.
+    - axis_scores: sum of quantities for cards matching the axis (signal strength)
+    - family_scores: sum of axis scores per family
+    - axis_match_counts: distinct-card count per axis (breadth of signal,
+      used by the dashboard to tie-break the per-family representative)
     """
     axis_scores: dict[str, float] = {axis_id: 0.0 for axis_id in AXIS_PATTERNS}
+    axis_match_counts: dict[str, int] = {axis_id: 0 for axis_id in AXIS_PATTERNS}
     total_cards = 0
     a2f = axis_to_family()
 
@@ -255,6 +258,7 @@ def score_deck(corpus: Iterable[dict]) -> tuple[dict[str, float], dict[str, floa
                     break
             if hit:
                 axis_scores[axis_id] += qty
+                axis_match_counts[axis_id] += 1
 
     family_scores: dict[str, float] = {}
     for axis_id, score in axis_scores.items():
@@ -263,4 +267,4 @@ def score_deck(corpus: Iterable[dict]) -> tuple[dict[str, float], dict[str, floa
             continue
         family_scores[fam] = family_scores.get(fam, 0.0) + score
 
-    return axis_scores, family_scores, total_cards
+    return axis_scores, family_scores, axis_match_counts, total_cards

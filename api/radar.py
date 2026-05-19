@@ -51,7 +51,7 @@ def _run(payload: dict) -> dict:
     deck_results = []
     for deck in full_decks:
         corpus = ds.deck_oracle_corpus(deck)
-        axis_scores, family_scores, total = rd.score_deck(corpus)
+        axis_scores, family_scores, axis_match_counts, total = rd.score_deck(corpus)
         deck_results.append({
             "name": ds.deck_display_name(deck),
             "source": deck.get("_source") or "moxfield",
@@ -60,6 +60,7 @@ def _run(payload: dict) -> dict:
             "color_identity": ds.deck_color_identity(deck),
             "family_scores": family_scores,
             "axis_scores": axis_scores,
+            "axis_match_counts": axis_match_counts,
         })
 
     return {

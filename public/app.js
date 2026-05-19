@@ -202,16 +202,31 @@ function renderUpgrades(data) {
   markTabReady("upgrades");
 }
 
-const TOP_AXES_COUNT = 8;
+// Pick the highest-scoring axis from each family. Tie-break: broader signal
+// (more distinct cards matching) wins; then alphabetical axis id for determinism.
+function pickFamilyRepresentatives(family, axisScores, axisMatchCounts) {
+  const candidates = family.axes.map((a) => ({
+    id: a.id,
+    score: axisScores[a.id] || 0,
+    matches: (axisMatchCounts && axisMatchCounts[a.id]) || 0,
+  }));
+  candidates.sort((a, b) => {
+    if (b.score !== a.score) return b.score - a.score;
+    if (b.matches !== a.matches) return b.matches - a.matches;
+    return a.id < b.id ? -1 : 1;
+  });
+  return candidates[0];
+}
 
 function renderRadar(data) {
   const meta = $("meta_radar");
   const panels = $("radar_panels");
   panels.innerHTML = "";
+  const familyCount = data.families.length;
   meta.innerHTML =
     `<span><b>${data.decks.length}</b> decks</span>` +
-    `<span>top <b>${TOP_AXES_COUNT}</b> axes shown</span>` +
-    `<span>${data.axes_total} total · ${data.families.length} families</span>` +
+    `<span>top axis per family</span>` +
+    `<span>${data.axes_total} axes · ${familyCount} families</span>` +
     `<span><b>${data.elapsed_sec}s</b></span>`;
 
   // Build a quick lookup from axis_id -> family object
@@ -221,22 +236,23 @@ function renderRadar(data) {
   });
 
   data.decks.forEach((d, idx) => {
-    // Pick the deck's top N axes across the whole 105
-    const ranked = Object.entries(d.axis_scores)
-      .filter(([, v]) => v > 0)
-      .sort((a, b) => b[1] - a[1]);
-    const topAxes = ranked.slice(0, TOP_AXES_COUNT);
-    const topSum = topAxes.reduce((s, [, v]) => s + v, 0);
-    const totalSum = ranked.reduce((s, [, v]) => s + v, 0);
-    const concentration = totalSum > 0 ? Math.round((topSum / totalSum) * 100) : 0;
+    // Pick one representative axis per family
+    const reps = data.families.map((f) => ({
+      family: f,
+      pick: pickFamilyRepresentatives(f, d.axis_scores, d.axis_match_counts),
+    }));
+    const activeReps = reps.filter((r) => r.pick.score > 0);
+    const totalSum = Object.values(d.axis_scores).reduce((s, v) => s + v, 0);
+    const repSum = activeReps.reduce((s, r) => s + r.pick.score, 0);
+    const concentration = totalSum > 0 ? Math.round((repSum / totalSum) * 100) : 0;
 
     const wrap = document.createElement("div");
     wrap.className = "deck-panel";
     wrap.innerHTML = `
-      <h3>${escapeHtml(d.name)} <small class="hint">${d.cards} cards · ${d.color_identity || "C"} · ${concentration}% of signal in top ${topAxes.length}</small></h3>
+      <h3>${escapeHtml(d.name)} <small class="hint">${d.cards} cards · ${d.color_identity || "C"} · ${activeReps.length}/${familyCount} families active · ${concentration}% of signal in top axes</small></h3>
       <div class="radar-grid">
         <div class="radar-cell">
-          <div class="radar-cell-hint">Dominant themes · click an axis to see its family</div>
+          <div class="radar-cell-hint">Top axis per family · click to drill into that family</div>
           <canvas id="radar_${idx}_top"></canvas>
         </div>
         <div class="radar-cell" id="radar_${idx}_drill_wrap" hidden>
@@ -248,7 +264,7 @@ function renderRadar(data) {
     `;
     panels.appendChild(wrap);
 
-    if (topAxes.length === 0) {
+    if (activeReps.length === 0) {
       const canvas = $(`radar_${idx}_top`);
       const ctx = canvas.getContext("2d");
       ctx.fillStyle = "#6c7585";
@@ -258,8 +274,12 @@ function renderRadar(data) {
       return;
     }
 
-    const labels = topAxes.map(([axisId]) => prettyAxis(axisId));
-    const values = topAxes.map(([, v]) => v);
+    // Plot all 12 families always; dim labels for zero-score families
+    const labels = reps.map((r) => `${r.family.label}\u2009\u2014\u2009${prettyAxis(r.pick.id)}`);
+    const values = reps.map((r) => r.pick.score);
+    const labelColors = reps.map((r) => (r.pick.score > 0 ? "#e6e9ef" : "#5a6378"));
+    const pointColors = reps.map((r) => (r.pick.score > 0 ? "#7c5cff" : "rgba(124, 92, 255, 0.25)"));
+    const pointSizes = reps.map((r) => (r.pick.score > 0 ? 5 : 2));
     const maxVal = Math.max(1, ...values);
 
     new Chart($(`radar_${idx}_top`), {
@@ -271,9 +291,9 @@ function renderRadar(data) {
           data: values,
           backgroundColor: "rgba(124, 92, 255, 0.22)",
           borderColor: "#7c5cff",
-          pointBackgroundColor: "#7c5cff",
-          pointRadius: 5,
-          pointHoverRadius: 7,
+          pointBackgroundColor: pointColors,
+          pointRadius: pointSizes,
+          pointHoverRadius: pointSizes.map((s) => s + 2),
           borderWidth: 2,
         }],
       },
@@ -283,19 +303,22 @@ function renderRadar(data) {
         onClick: (evt, els) => {
           if (!els.length) return;
           const ix = els[0].index;
-          const axisId = topAxes[ix][0];
-          const family = axisToFamily[axisId];
-          if (family) showDrill(idx, family, d.axis_scores, axisId);
+          const rep = reps[ix];
+          if (rep && rep.family) showDrill(idx, rep.family, d.axis_scores, rep.pick.id);
         },
         plugins: {
           legend: { display: false },
           tooltip: {
             callbacks: {
-              label: (c) => `${c.label}: ${c.formattedValue}`,
+              label: (c) => {
+                const rep = reps[c.dataIndex];
+                return `${rep.family.label}: ${c.formattedValue}`;
+              },
               afterLabel: (c) => {
-                const axisId = topAxes[c.dataIndex][0];
-                const family = axisToFamily[axisId];
-                return family ? `family: ${family.label}` : "";
+                const rep = reps[c.dataIndex];
+                return rep.pick.score > 0
+                  ? `top axis: ${prettyAxis(rep.pick.id)}`
+                  : "no axis active in this family";
               },
             },
           },
@@ -304,7 +327,10 @@ function renderRadar(data) {
           r: {
             angleLines: { color: "#262b3a" },
             grid: { color: "#262b3a" },
-            pointLabels: { color: "#e6e9ef", font: { size: 12, weight: "500" } },
+            pointLabels: {
+              color: labelColors,
+              font: { size: 11, weight: "500" },
+            },
             ticks: { color: "#6c7585", backdropColor: "transparent", maxTicksLimit: 4 },
             suggestedMin: 0,
             suggestedMax: maxVal,
