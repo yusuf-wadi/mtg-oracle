@@ -176,7 +176,6 @@
   "broader_concepts": [
     { "id": "target_any",        "seed": "to target a player, permanent, spell, or ability when casting a spell or activating an ability. targets are chosen on announcement and re-checked on resolution. targeted things with hexproof, shroud, or protection from the source cannot be targeted." },
     { "id": "untargeted",        "seed": "an effect that affects all of something, or each of something, without choosing a target. untargeted effects bypass hexproof, shroud, and ward and apply to objects that would not be legal targets." },
-    { "id": "may_choice",        "seed": "an optional effect denoted by the word may. the player chooses whether to perform the effect at the time of resolution, allowing flexibility in execution." },
     { "id": "replacement_effect","seed": "a replacement effect modifies an event before it happens, often using the words instead, would, or as. replacement effects do not use the stack and cannot be responded to." },
     { "id": "devotion",          "seed": "devotion to a color is the number of mana symbols of that color among the mana costs of permanents a player controls. devotion-matters effects scale with the saturation of a color on the battlefield." }
   ]

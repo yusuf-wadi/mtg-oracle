@@ -170,7 +170,6 @@ AXIS_PATTERNS: dict[str, list[str]] = {
     # ---- broader concepts ----
     "target_any":          [r"\btarget creature\b", r"\btarget player\b", r"\btarget permanent\b", r"\btarget spell\b"],
     "untargeted":          [r"\bnon-?targeted\b", r"\beach creature\b", r"\beach player\b", r"\beach opponent\b"],
-    "may_choice":          [r"\byou may\b"],
     "replacement_effect":  [r"\binstead\b", r"\bif .* would .*, .* instead\b"],
     "devotion":            [r"\bdevotion\b"],
 }
