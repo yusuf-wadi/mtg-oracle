@@ -368,7 +368,18 @@ if ($("user").value.trim()) {
 
 /* ---------------- result renderers ---------------- */
 
+// Most recent /api/match structured payload. Radar mode reads this to overlay
+// each candidate's axis fingerprint on the matching deck's profile. We keep
+// it in module scope (cleared when a new run starts) rather than localStorage
+// because candidate fits depend on the exact decks that were just analyzed.
+let lastUpgradeRun = null;
+
 function renderUpgrades(data) {
+  // Stash the structured data BEFORE rendering markdown so that if the user
+  // immediately switches to the Radar tab they see overlays.
+  if (data && data.data) {
+    lastUpgradeRun = { data: data.data, ts: Date.now() };
+  }
   const meta = $("meta_upgrades");
   const report = $("report_upgrades");
   const extraBadge = (data.extra_decks_count && data.extra_decks_count > 0)
@@ -416,15 +427,36 @@ function pickFamilyRepresentatives(family, axisScores, axisMatchCounts) {
   return candidates[0];
 }
 
+// Color palette for candidate overlays. Deck stays #7c5cff. These are picked
+// to read clearly on a dark background and against each other when overlaid.
+const CANDIDATE_COLORS = [
+  "#4ad6c0", "#ff9f43", "#ee5a52", "#ffd166", "#06d6a0",
+  "#8338ec", "#3a86ff", "#fb5607", "#ff006e", "#a0e8af",
+];
+
+// Expand a Chart.js hex color to a translucent fill version (for the polygon
+// area behind the outline). Accepts #rrggbb.
+function toFill(hex, alpha) {
+  const r = parseInt(hex.slice(1, 3), 16);
+  const g = parseInt(hex.slice(3, 5), 16);
+  const b = parseInt(hex.slice(5, 7), 16);
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+}
+
 function renderRadar(data) {
   const meta = $("meta_radar");
   const panels = $("radar_panels");
   panels.innerHTML = "";
   const familyCount = data.families.length;
+  const upgradeData = lastUpgradeRun && lastUpgradeRun.data;
+  const candidateNote = upgradeData && Array.isArray(upgradeData.candidates) && upgradeData.candidates.length > 0
+    ? `<span><b>${upgradeData.candidates.length}</b> upgrade candidates overlaid</span>`
+    : "";
   meta.innerHTML =
     `<span><b>${data.decks.length}</b> decks</span>` +
     `<span>top child axis per family</span>` +
     `<span>${data.axes_total} axes · ${familyCount} families</span>` +
+    candidateNote +
     `<span><b>${data.elapsed_sec}s</b></span>`;
 
   // Build a quick lookup from axis_id -> family object
@@ -452,6 +484,7 @@ function renderRadar(data) {
         <div class="radar-cell radar-headline">
           <div class="radar-cell-hint">Top child axis per family · click a point to drill into that family</div>
           <canvas id="radar_${idx}_top"></canvas>
+          <div class="candidate-legend" id="radar_${idx}_legend"></div>
         </div>
         <div class="radar-cell" id="radar_${idx}_drill_wrap" hidden>
           <h4 id="radar_${idx}_drill_title"></h4>
@@ -485,7 +518,81 @@ function renderRadar(data) {
     const labelColors = reps.map((r) => (r.pick.score > 0 ? "#e6e9ef" : "#5a6378"));
     const pointColors = reps.map((r) => (r.pick.score > 0 ? "#7c5cff" : "rgba(124, 92, 255, 0.25)"));
     const pointSizes = reps.map((r) => (r.pick.score > 0 ? 5 : 2));
-    const maxVal = Math.max(1, ...values);
+    const deckMax = Math.max(1, ...values);
+
+    // ---- Candidate overlays --------------------------------------------
+    // Find every upgrade candidate that has a fit recommendation for THIS
+    // deck. For each, project its axis_scores onto the same 12 spokes the
+    // deck is using (one per family: the deck's top child axis). Boost the
+    // card polygon by (deckMax / cardMax) so it's visible against the deck's
+    // raw scale, and compute two normalized fit metrics:
+    //   gap_fill  = mean over spokes of max(0, card_norm - deck_norm)
+    //   reinforce = mean over spokes of min(card_norm, deck_norm)
+    // gap_fill answers "does this card cover ground the deck is missing?";
+    // reinforce answers "does it double down on existing strengths?". Both
+    // live in [0, 1] so a user can compare candidates directly.
+    const candidateOverlays = [];
+    if (upgradeData && Array.isArray(upgradeData.candidates)) {
+      const deckPid = d.public_id || d.url || d.name;
+      const deckNorm = values.map((v) => (deckMax > 0 ? v / deckMax : 0));
+      upgradeData.candidates.forEach((cand) => {
+        if (!cand || !Array.isArray(cand.fits)) return;
+        const fit = cand.fits.find((f) => f.deck_public_id === deckPid || f.deck_name === d.name);
+        if (!fit) return;
+        // Sparse axis_scores: only non-zero entries are present.
+        const cs = cand.axis_scores || {};
+        // Project onto the deck's chosen rep axes. If the card scores 0 on
+        // the deck's pick but >0 elsewhere in the same family, surface the
+        // family-sum as a fallback so the overlay doesn't read as empty.
+        const rawCard = reps.map((r) => {
+          const direct = cs[r.pick.id] || 0;
+          if (direct > 0) return direct;
+          let famSum = 0;
+          for (const a of r.family.axes) famSum += cs[a.id] || 0;
+          return famSum;
+        });
+        const cardMax = Math.max(0, ...rawCard);
+        if (cardMax <= 0) return; // card doesn't touch any family this deck cares about
+        const boost = deckMax / cardMax;
+        const boosted = rawCard.map((v) => v * boost);
+        const cardNorm = rawCard.map((v) => v / cardMax);
+        let gap = 0, rein = 0;
+        for (let i = 0; i < deckNorm.length; i += 1) {
+          gap += Math.max(0, cardNorm[i] - deckNorm[i]);
+          rein += Math.min(cardNorm[i], deckNorm[i]);
+        }
+        gap /= deckNorm.length;
+        rein /= deckNorm.length;
+        candidateOverlays.push({
+          name: cand.name,
+          rawCard,
+          boosted,
+          cardMax,
+          gap,
+          reinforce: rein,
+          color: CANDIDATE_COLORS[candidateOverlays.length % CANDIDATE_COLORS.length],
+        });
+      });
+      // Sort by combined fit signal so the most interesting overlays are
+      // assigned the brighter early-palette colors.
+      candidateOverlays.sort((a, b) => (b.gap + b.reinforce) - (a.gap + a.reinforce));
+      candidateOverlays.forEach((o, i) => { o.color = CANDIDATE_COLORS[i % CANDIDATE_COLORS.length]; });
+    }
+    const overlayMax = candidateOverlays.reduce((m, o) => Math.max(m, ...o.boosted), 0);
+    const maxVal = Math.max(deckMax, overlayMax);
+
+    const candidateDatasets = candidateOverlays.map((o) => ({
+      label: o.name,
+      data: o.boosted,
+      backgroundColor: toFill(o.color, 0.06),
+      borderColor: o.color,
+      pointBackgroundColor: o.color,
+      pointRadius: 3,
+      pointHoverRadius: 5,
+      borderWidth: 2,
+      borderDash: [5, 4],
+      fill: false,
+    }));
 
     const headlineChart = new Chart($(`radar_${idx}_top`), {
       type: "radar",
@@ -500,7 +607,7 @@ function renderRadar(data) {
           pointRadius: pointSizes,
           pointHoverRadius: pointSizes.map((s) => s + 2),
           borderWidth: 2,
-        }],
+        }, ...candidateDatasets],
       },
       options: {
         responsive: true,
@@ -517,16 +624,28 @@ function renderRadar(data) {
           tooltip: {
             callbacks: {
               label: (c) => {
-                const rep = reps[c.dataIndex];
-                return rep.pick.score > 0
-                  ? `${prettyAxis(rep.pick.id)}: ${c.formattedValue}`
-                  : `${rep.family.label}: 0`;
+                // Dataset 0 is the deck; >0 are candidate overlays. For
+                // candidates we show the RAW card score on that spoke, not
+                // the boosted display value, so numbers stay interpretable.
+                if (c.datasetIndex === 0) {
+                  const rep = reps[c.dataIndex];
+                  return rep.pick.score > 0
+                    ? `${d.name} · ${prettyAxis(rep.pick.id)}: ${c.formattedValue}`
+                    : `${d.name} · ${rep.family.label}: 0`;
+                }
+                const overlay = candidateOverlays[c.datasetIndex - 1];
+                if (!overlay) return c.formattedValue;
+                const raw = overlay.rawCard[c.dataIndex];
+                return `${overlay.name}: ${raw.toFixed(2)}`;
               },
               afterLabel: (c) => {
-                const rep = reps[c.dataIndex];
-                return rep.pick.score > 0
-                  ? `family: ${rep.family.label}`
-                  : "no axis active in this family";
+                if (c.datasetIndex === 0) {
+                  const rep = reps[c.dataIndex];
+                  return rep.pick.score > 0
+                    ? `family: ${rep.family.label}`
+                    : "no axis active in this family";
+                }
+                return "candidate · scaled to deck for visibility";
               },
             },
           },
@@ -548,6 +667,39 @@ function renderRadar(data) {
       },
     });
     registerChart("radar", headlineChart);
+
+    // ---- Candidate legend chips ----------------------------------------
+    // One chip per overlay candidate, click to toggle visibility on the
+    // headline chart. Shows the two fit numbers as small badges so the user
+    // can scan the list and pick the best card for this deck at a glance.
+    const legend = $(`radar_${idx}_legend`);
+    if (legend && candidateOverlays.length > 0) {
+      legend.innerHTML =
+        `<div class="candidate-legend-header">Upgrade candidates overlaid · click to toggle · ` +
+        `<span class="hint">gap-fill = covers new ground, reinforce = doubles down</span></div>` +
+        candidateOverlays.map((o, i) => {
+          const gapPct = Math.round(o.gap * 100);
+          const reinPct = Math.round(o.reinforce * 100);
+          return `<button type="button" class="candidate-chip" data-overlay-idx="${i}" ` +
+            `style="--chip-color: ${o.color}">` +
+            `<span class="chip-swatch"></span>` +
+            `<span class="chip-name">${escapeHtml(o.name)}</span>` +
+            `<span class="chip-stat" title="gap-fill: average new ground covered, normalized">gap ${gapPct}</span>` +
+            `<span class="chip-stat" title="reinforce: average overlap with deck strengths, normalized">rein ${reinPct}</span>` +
+            `</button>`;
+        }).join("");
+      legend.querySelectorAll(".candidate-chip").forEach((chip) => {
+        chip.addEventListener("click", () => {
+          const oi = Number(chip.dataset.overlayIdx);
+          // Dataset index in the chart is overlay index + 1 (deck is 0).
+          const dsIdx = oi + 1;
+          const meta = headlineChart.getDatasetMeta(dsIdx);
+          meta.hidden = !meta.hidden;
+          chip.classList.toggle("chip-off", meta.hidden);
+          headlineChart.update();
+        });
+      });
+    }
 
     function showDrill(panelIdx, family, axisScores, clickedAxisId) {
       const drillWrap = $(`radar_${panelIdx}_drill_wrap`);
@@ -882,6 +1034,11 @@ form.addEventListener("submit", async (e) => {
   statusEl.textContent = `Running ${modeLabel}\u2026`;
   resultsWrap.hidden = false;
   resetTabs(runningModes);
+  // Clear stashed candidate data from any previous run so radar doesn't show
+  // stale overlays if upgrades isn't part of this run.
+  if (primary !== "upgrades") {
+    lastUpgradeRun = null;
+  }
 
   const started = performance.now();
   const tasks = [];
