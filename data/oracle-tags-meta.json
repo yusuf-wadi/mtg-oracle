@@ -1,12 +1,12 @@
 {
   "source": "tagger.scryfall.com/graphql (ORACLE_CARD_TAG)",
-  "fetched_at": "2026-06-02T12:46:11Z",
-  "tag_count": 4321,
-  "card_count": 34851,
-  "edge_count": 223230,
-  "elapsed_minutes": 125.8,
-  "raw_bytes": 2563602,
-  "gz_bytes": 1140877,
-  "sha256": "370e54423f0c086e3a7747b01446a9703139b1bd9cbdababf73248c50e1c5698",
+  "fetched_at": "2026-07-02T12:04:50Z",
+  "tag_count": 4352,
+  "card_count": 35550,
+  "edge_count": 226758,
+  "elapsed_minutes": 117.5,
+  "raw_bytes": 2609566,
+  "gz_bytes": 1162808,
+  "sha256": "6fbbea35576245ea53c40f1e000d257f11204993b98311a55e9d6c6d4cb5f3bb",
   "note": "Fetched via the undocumented tagger.scryfall.com GraphQL endpoint (ORACLE_CARD_TAG, descendants=false). Refreshes should run monthly."
 }
